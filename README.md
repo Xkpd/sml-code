@@ -119,6 +119,7 @@ run.py                      Shared tune, select, refit, test, and export runner
 data.py                     Data and frozen-split loading
 metrics.py                  Metrics and training class weights
 results.py                  Output validation and result summaries
+graph/plot.py               Three research figures from completed model results
 models/                     Model adapters
 data/shards/                Processed participant/domain feature files
 splits/                     Frozen outer, inner, and matched manifests
@@ -220,6 +221,39 @@ python run.py evaluate --model lightgbm --detail confusion --analysis main --dom
 Confusion matrices show true classes in rows and predicted classes in columns. Pooled window counts are descriptive; the accompanying normalized matrix gives each eligible participant equal weight. Per-class summaries report the number of contributing folds; a class with fewer than ten contributing folds has no ten-fold confidence interval.
 
 Generated outputs, local recovery files, environments, and model checkpoints are excluded from version control. Participant-level predictions should be handled using the project's approved secure sharing process.
+
+## Research graphs
+
+The `graph` folder needs only one source file, `plot.py`. After the model runs are complete, collect each model's existing `tuning.csv` and `predictions.csv.gz` under `outputs/<model>/`, where the model folders are `multinomial_logistic_regression`, `lightgbm` and `ft_transformer`.
+
+Install the plotting dependency separately, then run from this project folder:
+
+```bash
+python -m pip install matplotlib==3.11.2
+python graph/plot.py
+```
+
+This creates only three figure files alongside the script:
+
+| Figure | Research question addressed |
+|---|---|
+| `graph/learning_curves.png` | How does participant Macro-F1 change with 6/12/18 labelled training participants, for each model and training domain? |
+| `graph/domain_comparison.png` | At 18 participants, how do FL and Lab compare before and after matching participant-by-class window counts? Includes the paired FL-minus-Lab differences. |
+| `graph/class_f1.png` | At 18 participants in the main analysis, which of the four activities are difficult for each model and training domain? |
+
+All figures evaluate unseen FL participants. The script validates complete outputs against the frozen experiment and uses `results.py` for every score and confidence interval. It does not fit models or write extra CSV files. Incomplete conditions are rejected. A subset of completed models can be drawn explicitly, for example:
+
+```bash
+python graph/plot.py --models lr lightgbm
+```
+
+The figures name the models shown; missing models are never treated as zero scores. The default command requires all three models. Optional `--results-dir PATH` changes the parent input folder; `--output-dir PATH` changes the image destination. Images cannot be saved inside the model results, recovery or input-data folders. Running again replaces the same three images, so there is no accumulation of dated copies.
+
+Error bars are the existing approximate 95% t intervals across ten outer-fold means after seed averaging. They are not intervals across individual windows or thirty independent seed runs, and are not silently clipped to 0–1. The paired difference uses the shared paired-fold calculation, rather than subtracting separate confidence-interval endpoints. Matched comparisons control counts but do not establish a causal domain effect.
+
+Class F1 follows the agreed absent-class convention: unsupported values are shown as NA; fewer than ten contributing folds are labelled and have no ten-fold interval. Do not average these plotted class means to reconstruct primary participant Macro-F1. More detailed precision, recall, accuracy and confusion matrices remain available through `run.py evaluate --detail ...`; they are not extra default graphs.
+
+Matplotlib is only a plotting dependency. The frozen training requirements and experiment lock are unchanged by adding this folder.
 
 ## Current implementation status
 
