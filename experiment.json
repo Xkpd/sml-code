@@ -1,5 +1,5 @@
 {
-  "protocol_version": "paaws_shared_v3",
+  "protocol_version": "paaws_shared_v4",
   "research_question": "How does increasing the number of labelled training participants affect four-class activity-recognition performance on unseen naturalistic participants when models are trained using naturalistic versus laboratory data?",
   "dataset_version": "paaws_model_v1_1",
   "feature_count": 135,
@@ -31,7 +31,7 @@
       "status": "ready",
       "module": "models.lightgbm",
       "hyperparameter_name": "num_leaves",
-      "grid": [127, 255, 511],
+      "grid": [63, 127, 255],
       "selection_rule": "exact_max_then_lower_value",
       "selection_tolerance": 0.0,
       "settings": {

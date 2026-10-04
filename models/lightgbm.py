@@ -32,8 +32,8 @@ def fit(train, validation, *, value, seed, settings, sample_weight, epochs=None)
     """Fit raw training features. No validation-based early stopping is used."""
     if epochs is not None:
         raise ValueError("LightGBM uses its configured boosting cap, not refit epochs")
-    if isinstance(value, bool) or not isinstance(value, Integral) or value not in (127, 255, 511):
-        raise ValueError("num_leaves must be one of 127, 255, 511")
+    if isinstance(value, bool) or not isinstance(value, Integral) or value not in (63, 127, 255):
+        raise ValueError("num_leaves must be one of 63, 127, 255")
     fixed = {key: value for key, value in settings.items() if key != "n_jobs"}
     if fixed != FIXED_PARAMETERS:
         raise ValueError("LightGBM settings differ from the agreed fixed parameters")

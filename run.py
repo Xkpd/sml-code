@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import asdict, replace
 import hashlib
@@ -13,6 +14,7 @@ from pathlib import Path
 import platform
 import sqlite3
 import sys
+import threading
 import time
 
 import numpy as np
@@ -188,7 +190,9 @@ class Progress:
         existed = path.exists()
         if require_existing and not existed:
             raise ValueError("Recovery database is missing; saved results will not be replaced")
-        self.db = sqlite3.connect(f"{path.resolve().as_uri()}?mode=rw", uri=True) if existed else sqlite3.connect(path)
+        self._lock = threading.RLock()
+        self.db = (sqlite3.connect(f"{path.resolve().as_uri()}?mode=rw", uri=True, check_same_thread=False)
+                   if existed else sqlite3.connect(path, check_same_thread=False))
         try:
             if existed:
                 previous = self.get("metadata", "identity")
@@ -205,7 +209,8 @@ class Progress:
             raise ValueError(f"Invalid recovery database: {exc}") from exc
 
     def get(self, kind, key):
-        row = self.db.execute("SELECT value,sha FROM items WHERE kind=? AND key=?", (kind, key)).fetchone()
+        with self._lock:
+            row = self.db.execute("SELECT value,sha FROM items WHERE kind=? AND key=?", (kind, key)).fetchone()
         if row is None:
             return None
         value, sha = row
@@ -214,11 +219,12 @@ class Progress:
         return value
 
     def put(self, kind, key, value):
-        with self.db:
+        with self._lock, self.db:
             self.db.execute("INSERT OR REPLACE INTO items VALUES (?,?,?,?)", (kind, key, value, digest(value)))
 
     def close(self):
-        self.db.close()
+        with self._lock:
+            self.db.close()
 
 
 def recovery_location(root, model, folder, recovery_dir=None, require_existing=False):
@@ -243,12 +249,13 @@ def recovery_location(root, model, folder, recovery_dir=None, require_existing=F
 
 class Runner:
     def __init__(self, root, config, model, folder, frozen, *, adapter=None, data=None, runtime=None,
-                 recovery_dir=None, require_existing=False):
+                 recovery_dir=None, require_existing=False, threads_per_fit=None):
         self.root, self.config, self.model = Path(root), config, model
         self.spec = config["models"][model]
         self.folder = Path(folder).resolve()
         self.recovery_dir = recovery_location(root, model, self.folder, recovery_dir, require_existing)
         self.adapter = adapter or importlib.import_module(self.spec["module"])
+        self.threads_per_fit = threads_per_fit
         self.data = data or ExperimentData(self.root / "data", self.root / "splits", config)
         self.identity = {"shared_sha256": frozen["shared_sha256"], "model": model,
                          "model_sha256": frozen["models"][model]["sha256"],
@@ -276,8 +283,11 @@ class Runner:
             raise ValueError("Fitting must never receive outer-test data")
         weights, _ = inverse_frequency_sample_weights(split.train.y)
         start = time.perf_counter()
+        settings = self.spec["settings"]
+        if self.model == "lightgbm" and self.threads_per_fit is not None:
+            settings = {**settings, "n_jobs": self.threads_per_fit}
         state, info = self.adapter.fit(split.train, split.validation, value=value, seed=seed,
-                                       settings=self.spec["settings"], sample_weight=weights, epochs=epochs)
+                                       settings=settings, sample_weight=weights, epochs=epochs)
         info = dict(info)
         info.update(fit_seconds=time.perf_counter() - start, train_windows=len(split.train))
         if self.model == "ft_transformer":
@@ -402,6 +412,46 @@ def checked_probabilities(values, count):
     return values
 
 
+def partition_conditions_by_outer_fold(selected, workers):
+    """Keep all conditions from an outer fold on one worker.
+
+    Matched seeds 42 and 73 reuse seed 17's selection, so splitting one outer
+    fold across workers could duplicate tuning. Round-robin fold assignment is
+    deterministic and balances the ten folds as evenly as possible.
+    """
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+        raise ValueError("workers must be a positive integer")
+    folds = sorted({condition.outer_fold for condition in selected})
+    groups = [[] for _ in range(min(workers, len(folds)))]
+    if not groups:
+        return []
+    owner = {fold: index % len(groups) for index, fold in enumerate(folds)}
+    for condition in selected:
+        groups[owner[condition.outer_fold]].append(condition)
+    return groups
+
+
+def run_conditions(runner, selected, workers=1):
+    groups = partition_conditions_by_outer_fold(selected, workers)
+    if len(groups) <= 1:
+        for condition in selected:
+            runner.run_condition(condition)
+        return
+    print("Parallel outer-fold workers: " + ", ".join(
+        f"worker {index + 1}={sorted({c.outer_fold for c in group})}"
+        for index, group in enumerate(groups)), flush=True)
+    with ThreadPoolExecutor(max_workers=len(groups), thread_name_prefix="outer-fold") as pool:
+        futures = [pool.submit(lambda items=group: [runner.run_condition(c) for c in items])
+                   for group in groups]
+        try:
+            for future in as_completed(futures):
+                future.result()
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            raise
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("plan", "freeze", "check", "run", "export", "validate", "summarise", "evaluate"))
@@ -415,6 +465,10 @@ def main(argv=None):
     parser.add_argument("--outer-fold", type=int, choices=range(10))
     parser.add_argument("--subset-seed", type=int, choices=(17, 42, 73))
     parser.add_argument("--subset-size", type=int, choices=(6, 9, 12, 15, 18))
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Parallel outer-fold workers for LightGBM; use 3 on a 10-core M1 Max")
+    parser.add_argument("--threads-per-fit", type=int,
+                        help="LightGBM CPU threads per fit; with --workers 3 the default is 3")
     parser.add_argument("--allow-partial", action="store_true", help="For validate only: check available conditions without claiming a complete study")
     args = parser.parse_args(argv)
     config = read_config()
@@ -432,6 +486,12 @@ def main(argv=None):
     if not args.model:
         parser.error("--model is required for this command")
     model = MODEL_ALIASES.get(args.model, args.model)
+    if args.workers < 1 or args.threads_per_fit is not None and args.threads_per_fit < 1:
+        parser.error("--workers and --threads-per-fit must be positive integers")
+    if args.workers > 1 and (args.command != "run" or model != "lightgbm"):
+        parser.error("parallel workers are currently supported only for the LightGBM run command")
+    if args.threads_per_fit is not None and model != "lightgbm":
+        parser.error("--threads-per-fit applies only to LightGBM")
     frozen = verify_frozen(ROOT, config, model)
     folder = args.output or ROOT / "outputs" / model
     if args.command == "check":
@@ -460,12 +520,16 @@ def main(argv=None):
     recovery = recovery_location(ROOT, model, folder, args.recovery_dir, require_existing=args.command == "export")
     recovery.mkdir(parents=True, exist_ok=True)
     with single_writer(recovery):
+        threads_per_fit = args.threads_per_fit
+        if model == "lightgbm" and args.workers > 1 and threads_per_fit is None:
+            threads_per_fit = max(1, (os.cpu_count() or args.workers) // args.workers)
+        if model == "lightgbm" and args.workers > 1:
+            print(f"LightGBM execution: workers={args.workers}; threads_per_fit={threads_per_fit}", flush=True)
         runner = Runner(ROOT, config, model, folder, frozen, recovery_dir=recovery,
-                        require_existing=args.command == "export")
+                        require_existing=args.command == "export", threads_per_fit=threads_per_fit)
         try:
             if args.command == "run":
-                for condition in selected:
-                    runner.run_condition(condition)
+                run_conditions(runner, selected, args.workers)
             count = runner.export()
             if not (folder / "tuning.csv").exists():
                 print("No completed selections or predictions to export. Recovery data is retained.")
