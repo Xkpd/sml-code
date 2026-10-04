@@ -1,4 +1,4 @@
-"""Person 3's integration point; FT is unavailable until its owner completes this.
+"""FT-Transformer integration interface for the shared experiment runner.
 
 Implement these four functions without adding a separate CV or output-writing loop.
 The common runner supplies the fixed splits, tuning candidate, seed, settings and
@@ -24,8 +24,8 @@ This placeholder deliberately does not import PyTorch or reuse a partial benchma
 
 def _unavailable():
     raise NotImplementedError(
-        "FT-Transformer is not integrated yet. Person 3 must implement "
-        "models/ft_transformer.py and confirm its settings before a full FT run."
+        "FT-Transformer is not integrated yet. Implement models/ft_transformer.py "
+        "and confirm its settings before a full FT run."
     )
 
 

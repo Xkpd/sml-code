@@ -8,7 +8,7 @@ repository public, fork it publicly, or share it outside the authorised group.
 ## Recommended workflow
 
 1. Before starting work, fetch and pull the latest `main` branch.
-2. Create a short-lived branch for one task, such as `xingkun/lightgbm-update`.
+2. Create a short-lived branch for one task, such as `feature/lightgbm-update`.
 3. Make a small, focused change and run the relevant tests.
 4. Commit with a clear message, then push the branch.
 5. Open a pull request on GitHub. Ask one group member to review it before merging.

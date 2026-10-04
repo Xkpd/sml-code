@@ -1,4 +1,11 @@
-"""Person 1's multinomial LR, adapted to the shared runner's small interface."""
+"""Multinomial logistic-regression adapter for the shared experiment runner.
+
+This module contains model-specific fitting, probability prediction and
+checkpoint handling. Participant splits, nested CV, label prediction
+(``argmax`` of the ordered probabilities), metrics and result writing are
+centralised in ``run.py`` and ``results.py`` so every model follows the same
+experimental procedure.
+"""
 
 from __future__ import annotations
 
@@ -48,7 +55,11 @@ def fit(train, validation, *, value, seed, settings, sample_weight, epochs=None)
 
 
 def predict_proba(state, X):
-    """Return full-precision probabilities in Sitting/Standing/Lying/Walking order."""
+    """Scale X and call the fitted model's predict_proba method.
+
+    The shared runner converts these ordered probabilities to predicted labels
+    with argmax, which is equivalent to ``model.predict`` for this classifier.
+    """
     model = state["model"]
     if not np.array_equal(model.classes_, np.arange(4)):
         raise ValueError("Saved LR class order is invalid")

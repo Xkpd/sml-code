@@ -1,4 +1,4 @@
-"""The user's LightGBM model, using raw features and shared training weights."""
+"""LightGBM adapter using raw features and shared training weights."""
 
 from __future__ import annotations
 
