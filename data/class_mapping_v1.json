@@ -1,0 +1,48 @@
+{
+  "version": "class_mapping_v1",
+  "source": "PAAWS benchmark MAPPING_SCHEMES['lab_fl_5']",
+  "primary_classes": [
+    "Sitting",
+    "Standing",
+    "Lying_Down",
+    "Walking"
+  ],
+  "sensitivity_classes": [
+    "Sitting",
+    "Standing",
+    "Lying_Down",
+    "Walking",
+    "Biking"
+  ],
+  "raw_to_class": {
+    "Sitting_Still": "Sitting",
+    "Sitting_With_Movement": "Sitting",
+    "Sit_Recline_Talk_Lab": "Sitting",
+    "Sit_Recline_Web_Browse_Lab": "Sitting",
+    "Sit_Writing_Lab": "Sitting",
+    "Sit_Typing_Lab": "Sitting",
+    "Standing_Still": "Standing",
+    "Standing_With_Movement": "Standing",
+    "Stand_Conversation_Lab": "Standing",
+    "Lying_Still": "Lying_Down",
+    "Lying_With_Movement": "Lying_Down",
+    "Lying_On_Back_Lab": "Lying_Down",
+    "Lying_On_Right_Side_Lab": "Lying_Down",
+    "Lying_On_Stomach_Lab": "Lying_Down",
+    "Lying_On_Left_Side_Lab": "Lying_Down",
+    "Walking": "Walking",
+    "Treadmill_2mph_Lab": "Walking",
+    "Treadmill_3mph_Conversation_Lab": "Walking",
+    "Treadmill_3mph_Free_Walk_Lab": "Walking",
+    "Treadmill_3mph_Drink_Lab": "Walking",
+    "Treadmill_3mph_Briefcase_Lab": "Walking",
+    "Treadmill_3mph_Phone_Lab": "Walking",
+    "Treadmill_3mph_Hands_Pockets_Lab": "Walking",
+    "Walking_Fast": "Walking",
+    "Walking_Slow": "Walking",
+    "Stationary_Biking_300_Lab": "Biking",
+    "Exercising_Gym_Stationary_Bicycle": "Biking",
+    "Cycling_Active_Pedaling_Stationary_Bike": "Biking",
+    "Cycling_Active_Pedaling_Regular_Bicycle": "Biking"
+  }
+}

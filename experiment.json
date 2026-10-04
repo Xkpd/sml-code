@@ -1,0 +1,57 @@
+{
+  "protocol_version": "paaws_shared_v2",
+  "research_question": "How does increasing the number of labelled training participants affect four-class activity-recognition performance on unseen naturalistic participants when models are trained using naturalistic versus laboratory data?",
+  "dataset_version": "paaws_model_v1_1",
+  "feature_count": 135,
+  "classes": ["Sitting", "Standing", "Lying_Down", "Walking"],
+  "outer_folds": 10,
+  "inner_folds": 3,
+  "participant_sizes": [6, 9, 12, 15, 18],
+  "subset_seeds": [17, 42, 73],
+  "training_domains": ["FL", "Formal_Lab"],
+  "matched_participant_sizes": [18],
+  "matched_tuning_seed": 17,
+  "test_domain": "FL",
+  "training_weights": "current_training_fold_inverse_class_frequency_mean_one",
+  "selection_metric": "unweighted_mean_of_validation_participant_macro_f1",
+  "aggregation": "participant_then_two_people_then_three_seeds_then_ten_outer_folds",
+  "error_bars": "approximate_95_percent_t_interval_across_10_fold_means_df9",
+  "models": {
+    "multinomial_logistic_regression": {
+      "status": "ready",
+      "module": "models.logistic_regression",
+      "hyperparameter_name": "C",
+      "grid": [0.03, 0.1, 0.3],
+      "selection_rule": "within_0.001_of_best_then_nearest_grid_middle",
+      "selection_tolerance": 0.001,
+      "settings": {"solver": "lbfgs", "max_iter": 2000, "tol": 0.0001},
+      "preprocessing": "training_fold_standardization"
+    },
+    "lightgbm": {
+      "status": "ready",
+      "module": "models.lightgbm",
+      "hyperparameter_name": "num_leaves",
+      "grid": [127, 255, 511],
+      "selection_rule": "exact_max_then_lower_value",
+      "selection_tolerance": 0.0,
+      "settings": {
+        "objective": "multiclass", "num_class": 4, "learning_rate": 0.05,
+        "n_estimators": 300, "max_depth": -1, "min_child_samples": 20,
+        "subsample": 1.0, "colsample_bytree": 1.0
+      },
+      "preprocessing": "none"
+    },
+    "ft_transformer": {
+      "status": "pending",
+      "module": "models.ft_transformer",
+      "hyperparameter_name": "learning_rate",
+      "grid": [0.0001, 0.0003, 0.001],
+      "selection_rule": "exact_max_then_lower_value",
+      "selection_tolerance": 0.0,
+      "settings": {},
+      "preprocessing": "training_fold_standardization",
+      "refit_epoch_rule": "median_of_selected_candidate_best_epochs",
+      "matched_epoch_policy": null
+    }
+  }
+}
