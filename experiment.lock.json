@@ -1,8 +1,8 @@
 {
-  "shared_sha256": "2048d1f6dd2ae8ee8accbea5eed4b4058a545e90cb6900e5e13e3c2b280533cd",
+  "shared_sha256": "fa8e6d865b0d29120fb53c705e10662e8a36fef8896d01d0357b1ea3fdaa274f",
   "shared": {
     "protocol": {
-      "protocol_version": "paaws_shared_v2",
+      "protocol_version": "paaws_shared_v3",
       "research_question": "How does increasing the number of labelled training participants affect four-class activity-recognition performance on unseen naturalistic participants when models are trained using naturalistic versus laboratory data?",
       "dataset_version": "paaws_model_v1_1",
       "feature_count": 135,
@@ -16,9 +16,7 @@
       "inner_folds": 3,
       "participant_sizes": [
         6,
-        9,
         12,
-        15,
         18
       ],
       "subset_seeds": [
@@ -41,10 +39,10 @@
       "error_bars": "approximate_95_percent_t_interval_across_10_fold_means_df9"
     },
     "files": {
-      "run.py": "64f9e9aefd43152f8f18c70a121790ca169642062144f7d1498f53d604279b53",
+      "run.py": "061cd25cae3624b5823ff0ba1496d9f8428d1d3695a9df89c588c48af0ae5d1a",
       "data.py": "581c91bb3b8f65622a49e8e669833988fe408b5afa87439c2f136d14457f958a",
       "metrics.py": "dcdbbbcd5c656af8a9f949363e641543e9494f220f722857f022b9e5d056c8b7",
-      "results.py": "a684c2a9f1c071a4ff3aa03ab6239e56b9b7356b98c788285af6764219f267f0",
+      "results.py": "c95535620bc24a6c41e2a2663384346fb6e3699d4e3c9fcf47298973ffb0673a",
       "requirements.txt": "14dae69a1ef6ba1bf19c01ea594415e46ca009c8056ca46677d3d03ada1846c2",
       "splits/outer_participant_roles.csv": "bb0597a1368c8b8e83a754921bdbb601f420b58c98557ec26c151d480f80450e",
       "splits/nested_participant_subsets.csv": "30ab895873c11442664c2a6923cd8a006330d3a283468479ce3975a93f8ef3b8",

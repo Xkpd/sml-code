@@ -24,6 +24,7 @@ env/
 
 # Generated experiment outputs and recovery state
 outputs/
+recovery/
 analysis/
 *.sqlite3
 *.sqlite3-*

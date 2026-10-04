@@ -10,10 +10,11 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
-from data import Condition, WindowTable, fit_standardizer, load_split
+from data import Condition, ExperimentData, WindowTable, fit_standardizer, load_split
 from metrics import classification_metrics, inverse_frequency_sample_weights, participant_macro_f1
 from results import (PREDICTION_FIELDS, TUNING_FIELDS, aggregate_results, prediction_csv_bytes,
                      select_candidate, validate_outputs, write_csv_atomic)
@@ -75,7 +76,7 @@ class FakeAdapter:
             assert not set(train.participant_id) & set(validation.participant_id)
         np.testing.assert_allclose(sample_weight, inverse_frequency_sample_weights(train.y)[0])
         self.calls.append((value, seed, validation is None, epochs))
-        return {"final": validation is None}, {"best_epoch": None}
+        return {"final": validation is None}, {"best_epoch": None, "actual_rounds": 7}
 
     def predict_proba(self, state, X):
         return np.eye(4)[X[:, 0].astype(int)] * .96 + .01
@@ -118,9 +119,17 @@ class SharedExperimentTests(unittest.TestCase):
                                 self.config, self.path / "splits", "lightgbm", require_complete=complete)
 
     def test_schedule_and_inner_test_guard(self):
+        from run import planned_workload
         planned = list(conditions(self.config))
-        self.assertEqual(len(planned), len(self.config["participant_sizes"]) * 60 + 60)
+        self.assertEqual(self.config["participant_sizes"], [6, 12, 18])
+        self.assertEqual(len(planned), 240)
         self.assertEqual(len({c.key for c in planned}), len(planned))
+        self.assertEqual(planned_workload(self.config, "lightgbm"),
+                         {"conditions": 240, "tuned_conditions": 200, "inner_fits": 1800,
+                          "refits": 240, "fits": 2040})
+        expanded = copy.deepcopy(self.config)
+        expanded["models"]["lightgbm"]["grid"].append(1023)
+        self.assertEqual(planned_workload(expanded, "lightgbm")["fits"], 2640)
         c = Condition("main", "Formal_Lab", 0, 17, 6)
         with self.assertRaises(ValueError):
             load_split(self.data, c, inner_fold=0, include_outer_test=True)
@@ -201,6 +210,121 @@ class SharedExperimentTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 with single_writer(self.path):
                     pass
+
+    def test_results_folder_has_only_two_files_and_recovery_is_separate(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.runner.run_condition(Condition("main", "Formal_Lab", 0, 17, 6))
+        self.runner.export()
+        self.assertEqual({p.name for p in (self.path / "output").iterdir()},
+                         {"tuning.csv", "predictions.csv.gz"})
+        recovery = self.path / "recovery/lightgbm"
+        self.assertTrue((recovery / "progress.sqlite3").is_file())
+        with single_writer(recovery):
+            self.assertTrue((recovery / "run.lock").is_file())
+        self.assertIn("fit_seconds", output.getvalue())
+        self.assertIn("actual_rounds", output.getvalue())
+        # Recovery belongs to this exact destination and cannot overwrite another run.
+        with self.assertRaises(ValueError):
+            Runner(self.path, self.config, "lightgbm", self.path / "other_output", self.frozen,
+                   adapter=self.adapter, data=self.data, runtime={"synthetic": True})
+
+    def test_absent_recovery_cannot_replace_existing_result_files(self):
+        with redirect_stdout(io.StringIO()):
+            self.runner.run_condition(Condition("main", "FL", 0, 17, 6))
+        self.runner.export()
+        original = {name: (self.path / "output" / name).read_bytes()
+                    for name in ("tuning.csv", "predictions.csv.gz")}
+        missing = self.path / "missing_recovery"
+        for require_existing in (False, True):
+            with self.subTest(require_existing=require_existing), self.assertRaises((ValueError, FileNotFoundError)):
+                Runner(self.path, self.config, "lightgbm", self.path / "output", self.frozen,
+                       adapter=self.adapter, data=self.data, runtime={"synthetic": True},
+                       recovery_dir=missing, require_existing=require_existing)
+        self.assertFalse((missing / "progress.sqlite3").exists())
+        for name, content in original.items():
+            self.assertEqual((self.path / "output" / name).read_bytes(), content)
+
+    def test_missing_and_unidentified_recovery_databases_are_rejected(self):
+        import sqlite3
+        missing = self.path / "missing.sqlite3"
+        with self.assertRaises((ValueError, FileNotFoundError)):
+            Progress(missing, {"identity": "test"}, require_existing=True)
+        self.assertFalse(missing.exists())
+        unknown = self.path / "unknown.sqlite3"
+        with sqlite3.connect(unknown) as db:
+            db.execute("CREATE TABLE unrelated (value TEXT)")
+        with self.assertRaises(ValueError):
+            Progress(unknown, {"identity": "test"})
+        with sqlite3.connect(unknown) as db:
+            if db.execute("SELECT name FROM sqlite_master WHERE name='items'").fetchone():
+                self.assertIsNone(db.execute("SELECT value FROM items WHERE kind='metadata' AND key='identity'").fetchone())
+
+    def test_empty_recovery_export_does_not_overwrite_result_files(self):
+        tuning, predictions = self.path / "output/tuning.csv", self.path / "output/predictions.csv.gz"
+        tuning.parent.mkdir()
+        tuning.write_bytes(b"existing tuning results")
+        predictions.write_bytes(b"existing prediction results")
+        with self.assertRaises(ValueError):
+            self.runner.export()
+        with self.assertRaises(ValueError):
+            Runner(self.path, self.config, "lightgbm", self.path / "output", self.frozen,
+                   adapter=self.adapter, data=self.data, runtime={"synthetic": True})
+        self.assertEqual(tuning.read_bytes(), b"existing tuning results")
+        self.assertEqual(predictions.read_bytes(), b"existing prediction results")
+
+    def test_restoring_older_recovery_cannot_shrink_newer_exported_results(self):
+        import sqlite3
+        with redirect_stdout(io.StringIO()):
+            self.runner.run_condition(Condition("main", "FL", 0, 17, 6))
+        self.runner.export()
+        backup = self.path / "older.sqlite3"
+        with sqlite3.connect(backup) as database:
+            self.runner.progress.db.backup(database)
+        with redirect_stdout(io.StringIO()):
+            self.runner.run_condition(Condition("main", "FL", 0, 42, 6))
+        self.runner.export()
+        original = {name: (self.path / "output" / name).read_bytes()
+                    for name in ("tuning.csv", "predictions.csv.gz")}
+        self.assertEqual(self.validate()["prediction_conditions"], 2)
+        self.runner.progress.close()
+        (self.path / "recovery/lightgbm/progress.sqlite3").write_bytes(backup.read_bytes())
+        with self.assertRaisesRegex(ValueError, "Existing results"):
+            Runner(self.path, self.config, "lightgbm", self.path / "output", self.frozen,
+                   adapter=self.adapter, data=self.data, runtime={"synthetic": True}, require_existing=True)
+        for name, content in original.items():
+            self.assertEqual((self.path / "output" / name).read_bytes(), content)
+        self.assertEqual(self.validate()["prediction_conditions"], 2)
+
+    def test_interrupted_two_file_export_resumes_without_refitting(self):
+        import os
+        with redirect_stdout(io.StringIO()):
+            self.runner.run_condition(Condition("main", "FL", 0, 17, 6))
+        self.runner.export()
+        original = {name: (self.path / "output" / name).read_bytes()
+                    for name in ("tuning.csv", "predictions.csv.gz")}
+        with redirect_stdout(io.StringIO()):
+            self.runner.run_condition(Condition("main", "FL", 0, 42, 6))
+        real_replace = os.replace
+        interrupted = False
+        def interrupt_second_result(source, destination):
+            nonlocal interrupted
+            if Path(destination).resolve() == (self.path / "output/predictions.csv.gz").resolve() and not interrupted:
+                interrupted = True
+                raise OSError("simulated interruption between result replacements")
+            return real_replace(source, destination)
+        with patch("run.os.replace", side_effect=interrupt_second_result), self.assertRaisesRegex(OSError, "simulated"):
+            self.runner.export()
+        self.assertTrue(interrupted)
+        self.assertNotEqual((self.path / "output/tuning.csv").read_bytes(), original["tuning.csv"])
+        self.assertEqual((self.path / "output/predictions.csv.gz").read_bytes(), original["predictions.csv.gz"])
+        self.runner.progress.close()
+        self.runner = Runner(self.path, self.config, "lightgbm", self.path / "output", self.frozen,
+                             adapter=self.adapter, data=self.data, runtime={"synthetic": True}, require_existing=True)
+        self.assertEqual(self.runner.export(), 2)
+        self.assertEqual(len(self.adapter.calls), 20)
+        report = self.validate()
+        self.assertEqual((report["tuning_rows"], report["prediction_rows"]), (18, 32))
 
     def test_selection_rules_and_training_only_scaling(self):
         rows = [{"hyperparameter_value": value, "inner_fold": fold,
@@ -311,7 +435,7 @@ class ProtocolIntegrityTests(unittest.TestCase):
                     freeze(self.path, self.config)
             path.write_bytes(saved)
         changed = copy.deepcopy(self.config)
-        changed["participant_sizes"] = [6, 12, 18]
+        changed["participant_sizes"] = [6, 9, 12, 15, 18]
         with self.assertRaises(ValueError):
             verify_frozen(self.path, changed, model)
         with self.assertRaises(ValueError):
@@ -416,12 +540,12 @@ class ProtocolIntegrityTests(unittest.TestCase):
             expected[domain] = np.asarray(per_fold)
         expected["FL_minus_Formal_Lab"] = expected["FL"] - expected["Formal_Lab"]
         for row in summaries:
-            metric = 1 if row["metric"] == "balanced_accuracy" else 0
+            metric = 1 if row["metric"] in ("balanced_accuracy", "accuracy") else 0
             values = expected[row["training_domain"]][:, metric]
             half = T_975_DF9 * values.std(ddof=1) / np.sqrt(10)
             np.testing.assert_allclose([row["mean"], row["ci_low"], row["ci_high"]],
                                        [values.mean(), values.mean() - half, values.mean() + half], atol=1e-14)
-        self.assertEqual(len(summaries), (len(self.config["participant_sizes"]) + 1) * 3 * 3)
+        self.assertEqual(len(summaries), (len(self.config["participant_sizes"]) + 1) * 3 * 4)
         # A missing small participant cannot silently turn into a window-weighted score.
         removed_person = [r for r in predictions if not (r["analysis"] == "main"
                           and r["training_domain"] == "FL" and r["outer_fold"] == 0
@@ -450,6 +574,133 @@ class ProtocolIntegrityTests(unittest.TestCase):
             write_csv_atomic(self.path / "tuning.csv", TUNING_FIELDS, rows)
             with self.subTest(change=change), self.assertRaises(ValueError):
                 self.validate_complete()
+
+    def test_saved_outputs_validate_and_print_analysis_without_recovery_or_extra_csv(self):
+        import run
+        self.complete_results_fixture()
+        before = {str(p.relative_to(self.path)): p.read_bytes()
+                  for p in self.path.rglob("*") if p.is_file()}
+        self.assertFalse((self.path / "recovery").exists())
+        for command in ("validate", "summarise", "evaluate"):
+            printed = io.StringIO()
+            with patch.object(run, "ROOT", self.path), patch.object(run, "read_config", return_value=self.config), \
+                    patch.object(run, "verify_frozen", return_value={}), redirect_stdout(printed):
+                run.main([command, "--model", "lightgbm", "--output", str(self.path)])
+            self.assertTrue(printed.getvalue().strip())
+            if command != "validate":
+                self.assertIn("accuracy", printed.getvalue())
+                self.assertIn("macro_f1", printed.getvalue())
+        self.assertFalse((self.path / "recovery").exists())
+        self.assertEqual({str(p.relative_to(self.path)): p.read_bytes()
+                          for p in self.path.rglob("*") if p.is_file()}, before)
+
+    def test_per_class_scores_confusions_supports_and_absent_classes(self):
+        from results import evaluate_results
+        self.complete_results_fixture()
+        report = evaluate_results(self.path / "predictions.csv.gz")
+        self.assertEqual(set(report), {"summary", "participants", "folds", "confusions", "class_summary"})
+        self.assertEqual(len(report["participants"]), 480)
+        self.assertEqual(len(report["confusions"]), 240)
+        def first_condition(row):
+            return (row["analysis"] == "main" and row["training_domain"] == "FL"
+                    and row["subset_size"] == 6 and row.get("outer_fold", 0) == 0
+                    and row.get("subset_seed", 17) == 17)
+        person = next(row for row in report["participants"] if first_condition(row)
+                      and row["test_participant"] == "p00")
+        self.assertAlmostEqual(person["accuracy"], 2 / 20)
+        self.assertAlmostEqual(person["macro_f1"], 4 / 22)
+        self.assertEqual(person["per_class"][0]["support"], 20)
+        self.assertAlmostEqual(person["per_class"][0]["precision"], 1)
+        self.assertAlmostEqual(person["per_class"][0]["recall"], .1)
+        for item in person["per_class"][1:]:
+            self.assertEqual(item["support"], 0)
+            self.assertTrue(all(item[k] is None for k in ("precision", "recall", "f1")))
+        confusion = next(row for row in report["confusions"] if first_condition(row))
+        self.assertEqual(confusion["pooled_counts"], [[2, 18, 0, 0], [0, 1, 0, 0], [0]*4, [0]*4])
+        self.assertEqual(confusion["contributing_participants_per_class"], [1, 1, 0, 0])
+        self.assertEqual(confusion["participant_balanced_row_normalized"],
+                         [[.1, .9, 0., 0.], [0., 1., 0., 0.], [None]*4, [None]*4])
+        fold = next(row for row in report["folds"] if first_condition(row))
+        self.assertAlmostEqual(fold["per_class"][0]["f1"], (4/22 + 6/23 + 8/24) / 3)
+        self.assertEqual(fold["per_class"][0]["support_per_seed"], 20)
+        self.assertEqual(fold["per_class"][0]["contributing_seeds"], 3)
+        missing = [row for row in report["class_summary"] if row["class_id"] in (2, 3)]
+        self.assertTrue(missing)
+        self.assertTrue(all(row["mean"] is None and row["ci_low"] is None
+                            and row["ci_high"] is None and row["contributing_folds"] == 0 for row in missing))
+
+    def test_cli_export_with_missing_recovery_preserves_saved_results(self):
+        import run
+        self.complete_results_fixture()
+        before = {name: (self.path / name).read_bytes() for name in ("tuning.csv", "predictions.csv.gz")}
+        frozen = {"shared_sha256": "synthetic", "models": {"lightgbm": {"sha256": "synthetic"}}}
+        with patch.object(run, "ROOT", self.path), patch.object(run, "read_config", return_value=self.config), \
+                patch.object(run, "verify_frozen", return_value=frozen), \
+                patch.object(run, "ExperimentData", return_value=FakeData(FakeAdapter())), \
+                patch.object(run, "environment", return_value={"synthetic": True}), redirect_stdout(io.StringIO()):
+            with self.assertRaises((ValueError, FileNotFoundError)):
+                run.main(["export", "--model", "lightgbm", "--output", str(self.path)])
+        for name, content in before.items():
+            self.assertEqual((self.path / name).read_bytes(), content)
+        self.assertFalse((self.path / "recovery/lightgbm/progress.sqlite3").exists())
+
+
+class RetainedMethodologyTests(unittest.TestCase):
+    def test_supplied_manifests_keep_original_nested_participant_cv(self):
+        config = read_config(ROOT)
+        data = ExperimentData(ROOT / "data", ROOT / "splits", config)
+        with (ROOT / "splits/nested_participant_subsets.csv").open() as handle:
+            manifest = list(csv.DictReader(handle))
+        held_out = []
+        for fold in range(10):
+            test = data.outer_test_participants(fold)
+            held_out.extend(test)
+            self.assertEqual(len(test), 2)
+            for replicate, seed in enumerate((17, 42, 73)):
+                previous = ()
+                for size in (6, 12, 18):
+                    rows = sorted((r for r in manifest if int(r["outer_fold"]) == fold
+                                   and int(r["replicate_id"]) == replicate and int(r["subset_size"]) == size),
+                                  key=lambda r: int(r["subset_position"]))
+                    expected = tuple(r["participant_id"] for r in rows)
+                    actual = data.subset_participants(fold, replicate, size)
+                    self.assertEqual(actual, expected)
+                    self.assertEqual(actual[:len(previous)], previous)
+                    self.assertTrue(all(int(r["replicate_seed"]) == seed for r in rows))
+                    self.assertFalse(set(actual) & set(test))
+                    previous = actual
+                    for inner in range(3):
+                        train, val = data.inner_participants(fold, replicate, size, inner)
+                        self.assertEqual(val, tuple(p for i, p in enumerate(expected) if i % 3 == inner))
+                        self.assertEqual(train, tuple(p for i, p in enumerate(expected) if i % 3 != inner))
+                        self.assertEqual(len(val), size // 3)
+                        self.assertFalse(set(train) & set(val))
+        self.assertEqual(len(held_out), len(set(held_out)))
+        self.assertEqual(len(held_out), 20)
+
+    def test_original_metric_and_scaling_formulas_on_fixed_independent_examples(self):
+        from metrics import metrics_from_confusion, mean_and_95pct_t_ci_across_10_outer_folds
+        cm = np.array([[8, 2, 0, 0], [1, 3, 0, 0], [0, 0, 0, 0], [1, 0, 0, 4]])
+        values = metrics_from_confusion(cm)
+        # The unsupported lying class is NA; predicted mistakes still hurt true classes.
+        expected_f1 = np.array([16 / 20, 6 / 9, np.nan, 8 / 9])
+        np.testing.assert_allclose(values.f1, expected_f1, equal_nan=True)
+        self.assertAlmostEqual(values.macro_f1, (16 / 20 + 6 / 9 + 8 / 9) / 3)
+        self.assertAlmostEqual(values.balanced_accuracy, (.8 + .75 + .8) / 3)
+        self.assertAlmostEqual(values.accuracy, 15 / 19)
+        self.assertAlmostEqual(values.weighted_f1, (10 * 16 / 20 + 4 * 6 / 9 + 5 * 8 / 9) / 19)
+        y = np.repeat(np.arange(4), [1, 2, 3, 4])
+        weights, classes = inverse_frequency_sample_weights(y)
+        np.testing.assert_allclose(classes, [2.5, 1.25, 10 / 12, .625])
+        self.assertAlmostEqual(weights.mean(), 1)
+        self.assertAlmostEqual(sum(weights[y == 0]), sum(weights[y == 3]))
+        scaler = fit_standardizer(np.array([[1., 4.], [3., 4.]]))
+        np.testing.assert_array_equal(scaler.mean, [2., 4.])
+        np.testing.assert_array_equal(scaler.scale, [1., 1.])
+        np.testing.assert_array_equal(scaler.transform(np.array([[5., 8.]])), [[3., 4.]])
+        mean, lower, upper = mean_and_95pct_t_ci_across_10_outer_folds(np.arange(10, dtype=float))
+        half = 2.2621571628540993 * np.sqrt(82.5 / 9) / np.sqrt(10)
+        np.testing.assert_allclose([mean, lower, upper], [4.5, 4.5 - half, 4.5 + half])
 
 
 if __name__ == "__main__":

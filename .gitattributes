@@ -6,3 +6,5 @@
 *.csv text eol=lf
 *.npz binary
 *.gz binary
+# Frozen manifests retain their original bytes on every platform.
+splits/*.csv -text

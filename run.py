@@ -19,7 +19,7 @@ import numpy as np
 
 from data import Condition, ExperimentData, load_split
 from metrics import inverse_frequency_sample_weights, participant_macro_f1
-from results import (TUNING_FIELDS, aggregate_results, prediction_csv_bytes, select_candidate,
+from results import (TUNING_FIELDS, evaluate_results, print_evaluation, prediction_csv_bytes, select_candidate,
                      validate_outputs, write_combined_predictions, write_csv_atomic)
 
 ROOT = Path(__file__).resolve().parent
@@ -28,6 +28,7 @@ SPLIT_FILES = ("outer_participant_roles.csv", "nested_participant_subsets.csv", 
                "matched_training_windows_replicate_0.csv.gz", "matched_training_windows_replicate_1.csv.gz",
                "matched_training_windows_replicate_2.csv.gz")
 MODEL_ALIASES = {"lr": "multinomial_logistic_regression", "lightgbm": "lightgbm", "ft": "ft_transformer"}
+RESULT_FILES = ("tuning.csv", "predictions.csv.gz")
 
 
 def json_bytes(value):
@@ -84,6 +85,14 @@ def conditions(config):
                 for size in sizes:
                     for seed in config["subset_seeds"]:
                         yield Condition(analysis, domain, outer, seed, size)
+
+
+def planned_workload(config, model):
+    scheduled = list(conditions(config))
+    tuned = sum(c.analysis == "main" or c.subset_seed == config["matched_tuning_seed"] for c in scheduled)
+    inner = tuned * config["inner_folds"] * len(config["models"][model]["grid"])
+    return {"conditions": len(scheduled), "tuned_conditions": tuned, "inner_fits": inner,
+            "refits": len(scheduled), "fits": inner + len(scheduled)}
 
 
 def fingerprint(root, config):
@@ -147,7 +156,7 @@ def environment(model):
 @contextmanager
 def single_writer(folder):
     """Operating-system lock is released even if the process is killed."""
-    path = Path(folder) / ".run.lock"
+    path = Path(folder) / "run.lock"
     with path.open("a+b") as handle:
         if handle.tell() == 0:
             handle.write(b"0")
@@ -161,7 +170,7 @@ def single_writer(folder):
                 import fcntl
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
-            raise RuntimeError("Another process is already using this model's output folder") from exc
+            raise RuntimeError("Another process is already using this model's recovery folder") from exc
         try:
             yield
         finally:
@@ -174,15 +183,26 @@ def single_writer(folder):
 
 class Progress:
     """One recovery database: inner scores, selections, final models and predictions."""
-    def __init__(self, path, identity):
-        self.db = sqlite3.connect(path)
-        self.db.execute("PRAGMA synchronous=FULL")
-        self.db.execute("CREATE TABLE IF NOT EXISTS items (kind TEXT, key TEXT, value BLOB, sha TEXT, PRIMARY KEY(kind,key))")
-        previous = self.get("metadata", "identity")
-        if previous is not None and previous != json_bytes(identity):
+    def __init__(self, path, identity, require_existing=False):
+        path = Path(path)
+        existed = path.exists()
+        if require_existing and not existed:
+            raise ValueError("Recovery database is missing; saved results will not be replaced")
+        self.db = sqlite3.connect(f"{path.resolve().as_uri()}?mode=rw", uri=True) if existed else sqlite3.connect(path)
+        try:
+            if existed:
+                previous = self.get("metadata", "identity")
+                if previous is None:
+                    raise ValueError("Existing recovery database has no experiment identity")
+                if previous != json_bytes(identity):
+                    raise ValueError("Recovery file belongs to different code, model settings, environment or output folder")
+            else:
+                self.db.execute("CREATE TABLE items (kind TEXT, key TEXT, value BLOB, sha TEXT, PRIMARY KEY(kind,key))")
+                self.put("metadata", "identity", json_bytes(identity))
+            self.db.execute("PRAGMA synchronous=FULL")
+        except (ValueError, sqlite3.DatabaseError) as exc:
             self.db.close()
-            raise ValueError("Recovery file belongs to different code, model settings or environment")
-        self.put("metadata", "identity", json_bytes(identity))
+            raise ValueError(f"Invalid recovery database: {exc}") from exc
 
     def get(self, kind, key):
         row = self.db.execute("SELECT value,sha FROM items WHERE kind=? AND key=?", (kind, key)).fetchone()
@@ -201,18 +221,55 @@ class Progress:
         self.db.close()
 
 
+def recovery_location(root, model, folder, recovery_dir=None, require_existing=False):
+    """Check storage before creating a database or touching either result file."""
+    folder = Path(folder).resolve()
+    recovery = Path(recovery_dir or Path(root) / "recovery" / model).resolve()
+    if folder == recovery or folder in recovery.parents or recovery in folder.parents:
+        raise ValueError("Results and recovery folders must be separate, non-overlapping folders")
+    devices = set()
+    for path in (folder, recovery):
+        while not path.exists():
+            path = path.parent
+        devices.add(path.stat().st_dev)
+    if len(devices) != 1:
+        raise ValueError("Results and recovery must be on the same filesystem for atomic result replacement")
+    existing_results = any((folder / name).exists() for name in RESULT_FILES)
+    if (require_existing or existing_results) and not (recovery / "progress.sqlite3").is_file():
+        raise ValueError("The original recovery database is missing. Use validate/evaluate to read saved results; "
+                         "use a new output and recovery folder to start a new run.")
+    return recovery
+
+
 class Runner:
-    def __init__(self, root, config, model, folder, frozen, *, adapter=None, data=None, runtime=None):
+    def __init__(self, root, config, model, folder, frozen, *, adapter=None, data=None, runtime=None,
+                 recovery_dir=None, require_existing=False):
         self.root, self.config, self.model = Path(root), config, model
         self.spec = config["models"][model]
-        self.folder = Path(folder)
-        self.folder.mkdir(parents=True, exist_ok=True)
+        self.folder = Path(folder).resolve()
+        self.recovery_dir = recovery_location(root, model, self.folder, recovery_dir, require_existing)
         self.adapter = adapter or importlib.import_module(self.spec["module"])
         self.data = data or ExperimentData(self.root / "data", self.root / "splits", config)
         self.identity = {"shared_sha256": frozen["shared_sha256"], "model": model,
                          "model_sha256": frozen["models"][model]["sha256"],
+                         "results_dir": str(self.folder),
                          "environment": runtime if runtime is not None else environment(model)}
-        self.progress = Progress(self.folder / ".progress.sqlite3", self.identity)
+        self.recovery_dir.mkdir(parents=True, exist_ok=True)
+        self.progress = Progress(self.recovery_dir / "progress.sqlite3", self.identity, require_existing)
+        try:
+            self.guard_existing_results()
+        except ValueError:
+            self.progress.close()
+            raise
+
+    def guard_existing_results(self):
+        saved = self.progress.get("metadata", "export_hashes")
+        allowed = json.loads(saved) if saved is not None else {}
+        for name in RESULT_FILES:
+            path = self.folder / name
+            if path.exists() and file_digest(path) not in allowed.get(name, []):
+                raise ValueError("Existing results do not match this recovery database's exports. "
+                                 "Recovery may be empty, older, or from another run; results were preserved.")
 
     def fit(self, split, value, seed, epochs=None):
         if split.test is not None:
@@ -232,6 +289,10 @@ class Runner:
                 raise ValueError("FT final refit must run exactly the inner-selected epoch count")
         elif info.get("best_epoch") is not None:
             raise ValueError("best_epoch must be empty for LR and LightGBM")
+        details = [f"fit_seconds={info['fit_seconds']:.3f}", f"train_windows={info['train_windows']}"]
+        details += [f"{key}={info[key]}" for key in ("actual_rounds", "iterations", "epochs_run", "best_epoch")
+                    if info.get(key) is not None]
+        print("FIT finished: " + "; ".join(details), flush=True)
         return state, info
 
     def tune(self, condition):
@@ -303,6 +364,7 @@ class Runner:
         print(f"SAVED {condition.key}: {len(test)} held-out FL windows", flush=True)
 
     def export(self):
+        self.guard_existing_results()
         tuning = []
         completed = []
         for condition in conditions(self.config):
@@ -312,9 +374,22 @@ class Runner:
                     tuning.extend(json.loads(saved)["rows"])
             if self.progress.get("predictions", condition.key) is not None:
                 completed.append(condition)
-        write_csv_atomic(self.folder / "tuning.csv", TUNING_FIELDS, tuning)
-        write_combined_predictions(self.folder / "predictions.csv.gz",
+        if not tuning and not completed:
+            return 0
+        # Stage files in recovery. Record both old/new hashes BEFORE replacing either
+        # CSV so a crash between the two replacements can be recovered safely.
+        staged = {name: self.recovery_dir / ("export_" + name) for name in RESULT_FILES}
+        write_csv_atomic(staged["tuning.csv"], TUNING_FIELDS, tuning)
+        write_combined_predictions(staged["predictions.csv.gz"],
                                    (self.progress.get("predictions", c.key) for c in completed))
+        next_hashes = {name: [file_digest(path)] for name, path in staged.items()}
+        during_export = {name: hashes + ([file_digest(self.folder / name)] if (self.folder / name).exists() else [])
+                         for name, hashes in next_hashes.items()}
+        self.progress.put("metadata", "export_hashes", json_bytes(during_export))
+        self.folder.mkdir(parents=True, exist_ok=True)
+        for name, path in staged.items():
+            os.replace(path, self.folder / name)
+        self.progress.put("metadata", "export_hashes", json_bytes(next_hashes))
         return len(completed)
 
 
@@ -329,23 +404,25 @@ def checked_probabilities(values, count):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("plan", "freeze", "check", "run", "export", "validate", "summarise"))
+    parser.add_argument("command", choices=("plan", "freeze", "check", "run", "export", "validate", "summarise", "evaluate"))
     parser.add_argument("--model", choices=tuple(MODEL_ALIASES) + tuple(MODEL_ALIASES.values()))
     parser.add_argument("--output", type=Path, help="Default: outputs/<canonical model name>")
+    parser.add_argument("--recovery-dir", type=Path, help="Local progress/checkpoints for this model; default: recovery/<canonical model name>")
+    parser.add_argument("--detail", choices=("summary", "participants", "classes", "confusion", "folds", "all"),
+                        default="summary", help="Evaluation detail to print; no extra output file is created")
     parser.add_argument("--analysis", choices=("main", "matched"))
     parser.add_argument("--domain", choices=("FL", "Formal_Lab"))
     parser.add_argument("--outer-fold", type=int, choices=range(10))
     parser.add_argument("--subset-seed", type=int, choices=(17, 42, 73))
     parser.add_argument("--subset-size", type=int, choices=(6, 9, 12, 15, 18))
-    parser.add_argument("--allow-partial", action="store_true", help="Validate available conditions without claiming a complete study")
+    parser.add_argument("--allow-partial", action="store_true", help="For validate only: check available conditions without claiming a complete study")
     args = parser.parse_args(argv)
     config = read_config()
     scheduled = list(conditions(config))
     if args.command == "plan":
-        main_count = sum(c.analysis == "main" for c in scheduled)
         print(json.dumps({"participant_sizes": config["participant_sizes"], "conditions_per_model": len(scheduled),
-                          "fits_per_model": main_count * 10 + 240,
-                          "models": {k: v["status"] for k, v in config["models"].items()}}, indent=2))
+                          "models": {k: {"status": v["status"], **planned_workload(config, k)}
+                                     for k, v in config["models"].items()}}, indent=2))
         return
     if args.command == "freeze":
         locked = freeze(ROOT, config)
@@ -360,29 +437,39 @@ def main(argv=None):
     if args.command == "check":
         print(f"PASS: shared inputs and {model} match the frozen package. No training performed.")
         return
-    if args.command in ("validate", "summarise"):
+    filters = {"analysis": args.analysis, "training_domain": args.domain, "outer_fold": args.outer_fold,
+               "subset_seed": args.subset_seed, "subset_size": args.subset_size}
+    if args.command in ("validate", "summarise", "evaluate"):
         report = validate_outputs(folder / "tuning.csv", folder / "predictions.csv.gz", config,
-                                  ROOT / "splits", model, require_complete=args.command == "summarise" or not args.allow_partial)
+                                  ROOT / "splits", model,
+                                  require_complete=args.command != "validate" or not args.allow_partial)
         print(json.dumps(report, indent=2))
-        if args.command == "summarise":
-            rows = aggregate_results(folder / "predictions.csv.gz")
-            destination = ROOT / "analysis" / f"{model}_summary.csv"
-            write_csv_atomic(destination, rows[0].keys(), rows)
-            print("Graph-ready summary:", destination)
+        if args.command != "validate":
+            evaluation = evaluate_results(folder / "predictions.csv.gz")
+            # Filter the display AFTER aggregation; never turn selected folds into a new study mean/CI.
+            evaluation = {section: [row for row in rows if all(v is None or k not in row or row[k] == v
+                                                              for k, v in filters.items())]
+                          for section, rows in evaluation.items()}
+            if args.outer_fold is not None or args.subset_seed is not None:
+                print("Fold/seed filters limit detailed rows only; study summaries keep all available folds/seeds.")
+            print_evaluation(evaluation, detail=args.detail)
         return
-    folder.mkdir(parents=True, exist_ok=True)
-    with single_writer(folder):
-        runner = Runner(ROOT, config, model, folder, frozen)
+    selected = [c for c in scheduled if all(v is None or getattr(c, k) == v for k, v in filters.items())]
+    if args.command == "run" and not selected:
+        raise ValueError("No conditions match these filters in the frozen plan")
+    recovery = recovery_location(ROOT, model, folder, args.recovery_dir, require_existing=args.command == "export")
+    recovery.mkdir(parents=True, exist_ok=True)
+    with single_writer(recovery):
+        runner = Runner(ROOT, config, model, folder, frozen, recovery_dir=recovery,
+                        require_existing=args.command == "export")
         try:
             if args.command == "run":
-                filters = {"analysis": args.analysis, "training_domain": args.domain, "outer_fold": args.outer_fold,
-                           "subset_seed": args.subset_seed, "subset_size": args.subset_size}
-                selected = [c for c in scheduled if all(v is None or getattr(c, k) == v for k, v in filters.items())]
-                if not selected:
-                    raise ValueError("No conditions match these filters in the frozen plan")
                 for condition in selected:
                     runner.run_condition(condition)
             count = runner.export()
+            if not (folder / "tuning.csv").exists():
+                print("No completed selections or predictions to export. Recovery data is retained.")
+                return
             report = validate_outputs(folder / "tuning.csv", folder / "predictions.csv.gz", config,
                                       ROOT / "splits", model, require_complete=count == len(scheduled))
             print(json.dumps(report, indent=2))

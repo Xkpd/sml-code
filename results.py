@@ -250,49 +250,203 @@ def validate_outputs(tuning_path, predictions_path, config, split_dir, model, re
             "prediction_rows": total, "prediction_conditions": len(seen)}
 
 
-def aggregate_results(predictions_path):
-    """Manually score participants; average people, then seeds, then ten folds."""
-    from metrics import metrics_from_confusion, T_975_DF9
+SCORE_NAMES = ("macro_f1", "balanced_accuracy", "weighted_f1", "accuracy")
+CLASS_SCORE_NAMES = ("precision", "recall", "f1")
+CONDITION_NAMES = ("model", "analysis", "training_domain", "outer_fold", "subset_seed", "subset_size")
+GROUP_NAMES = ("model", "analysis", "training_domain", "subset_size")
+
+
+def _finite_or_none(value):
+    return float(value) if value is not None and math.isfinite(value) else None
+
+
+def _mean_present(values):
+    present = [float(v) for v in values if v is not None and math.isfinite(v)]
+    return statistics.mean(present) if present else None
+
+
+def _interval(values):
+    from metrics import mean_and_95pct_t_ci_across_10_outer_folds
+    present = [float(v) for v in values if v is not None and math.isfinite(v)]
+    mean, low, high = (_mean_present(present), None, None)
+    if len(present) == 10:
+        mean, low, high = mean_and_95pct_t_ci_across_10_outer_folds(np.asarray(present))
+    return {"mean": mean, "ci_low": low, "ci_high": high, "contributing_folds": len(present)}
+
+
+def evaluate_results(predictions_path):
+    """Evaluate validated full results without creating files.
+
+    Primary metrics always average participants, then the three seeds, then ten
+    outer folds. Class metrics follow that hierarchy, excluding absent true
+    classes at each level. Pooled confusion counts are descriptive only: they
+    never supply the primary scores. Matrix rows are true and columns predicted.
+    """
+    from metrics import metrics_from_confusion
     matrices = {}
     with _open(predictions_path) as handle:
-        for row in csv.DictReader(handle):
+        reader = csv.DictReader(handle)
+        if reader.fieldnames != list(PREDICTION_FIELDS):
+            raise ValueError("prediction CSV header does not match contract")
+        for row in reader:
+            truth, prediction = int(row["true_activity"]), int(row["predicted_activity"])
+            if truth not in range(4) or prediction not in range(4):
+                raise ValueError("activity IDs must be in 0..3")
             key = (row["model"],) + _condition(row) + (row["test_participant"],)
             matrix = matrices.setdefault(key, [[0] * 4 for _ in range(4)])
-            matrix[int(row["true_activity"])][int(row["predicted_activity"])] += 1
-    participants = {}
-    for key, matrix in matrices.items():
+            matrix[truth][prediction] += 1
+
+    participant_rows, by_condition = [], {}
+    for key, matrix in sorted(matrices.items()):
         metrics = metrics_from_confusion(np.asarray(matrix))
-        scores = (metrics.macro_f1, metrics.balanced_accuracy, metrics.weighted_f1)
-        participants.setdefault(key[:-1], []).append(scores)
-    seeds = {}
-    for key, scores in participants.items():
-        if len(scores) != 2:
+        row = dict(zip(CONDITION_NAMES, key[:-1]), test_participant=key[-1],
+                   confusion_matrix=matrix)
+        row.update({name: _finite_or_none(getattr(metrics, name)) for name in SCORE_NAMES})
+        row["per_class"] = [
+            {"class_id": c, "class_name": name, "support": int(metrics.support[c]),
+             **{metric: _finite_or_none(getattr(metrics, metric)[c]) for metric in CLASS_SCORE_NAMES}}
+            for c, name in enumerate(CLASSES)]
+        participant_rows.append(row)
+        by_condition.setdefault(key[:-1], []).append(row)
+
+    by_fold, confusions = {}, []
+    for key, people in sorted(by_condition.items()):
+        if len(people) != 2:
             raise ValueError("each outer condition requires exactly two test participants")
+        condition = dict(zip(CONDITION_NAMES, key))
+        condition.update({metric: _mean_present(p[metric] for p in people) for metric in SCORE_NAMES})
+        condition["per_class"] = []
+        balanced_matrix, contributors = [], []
+        for c, name in enumerate(CLASSES):
+            classes = [p["per_class"][c] for p in people]
+            eligible = [p for p in people if p["per_class"][c]["support"] > 0]
+            contributors.append(len(eligible))
+            balanced_matrix.append([
+                _mean_present(p["confusion_matrix"][c][j] / p["per_class"][c]["support"]
+                              for p in eligible) for j in range(4)])
+            condition["per_class"].append({
+                "class_id": c, "class_name": name,
+                "support": sum(p["support"] for p in classes),
+                "contributing_participants": len(eligible),
+                **{metric: _mean_present(p[metric] for p in classes) for metric in CLASS_SCORE_NAMES}})
+        confusions.append({
+            **dict(zip(CONDITION_NAMES, key)), "class_order": list(CLASSES),
+            "orientation": "rows=true, columns=predicted",
+            "pooled_counts": np.sum([p["confusion_matrix"] for p in people], axis=0).tolist(),
+            "participant_balanced_row_normalized": balanced_matrix,
+            "contributing_participants_per_class": contributors})
         model, analysis, domain, fold, seed, size = key
-        seeds.setdefault((model, analysis, domain, size, fold), []).append(
-            tuple(statistics.mean(s[i] for s in scores) for i in range(3)))
-    folds = {}
-    for key, scores in seeds.items():
-        if len(scores) != 3:
-            raise ValueError("each fold requires all three seeds")
-        folds.setdefault(key[:-1], {})[key[-1]] = tuple(statistics.mean(s[i] for s in scores) for i in range(3))
-    for key, fl_scores in list(folds.items()):
+        by_fold.setdefault((model, analysis, domain, size, fold), {})[seed] = condition
+
+    groups = {}
+    for key, seeds in sorted(by_fold.items()):
+        if set(seeds) != {17, 42, 73}:
+            raise ValueError("each fold requires seeds 17, 42 and 73")
+        records = list(seeds.values())
+        fold_row = dict(zip(GROUP_NAMES, key[:-1]), outer_fold=key[-1])
+        fold_row.update({metric: _mean_present(r[metric] for r in records) for metric in SCORE_NAMES})
+        fold_row["per_class"] = []
+        for c, name in enumerate(CLASSES):
+            classes = [r["per_class"][c] for r in records]
+            fold_row["per_class"].append({
+                "class_id": c, "class_name": name,
+                "support_per_seed": statistics.mean(r["support"] for r in classes),
+                "contributing_seeds": sum(r["support"] > 0 for r in classes),
+                **{metric: _mean_present(r[metric] for r in classes) for metric in CLASS_SCORE_NAMES}})
+        groups.setdefault(key[:-1], {})[key[-1]] = fold_row
+
+    for key, fl_folds in list(groups.items()):
         model, analysis, domain, size = key
-        lab_scores = folds.get((model, analysis, "Formal_Lab", size))
-        if domain == "FL" and lab_scores is not None:
-            if set(fl_scores) != set(lab_scores):
-                raise ValueError("FL and Lab outer folds must match for paired comparisons")
-            folds[(model, analysis, "FL_minus_Formal_Lab", size)] = {
-                fold: tuple(fl_scores[fold][i] - lab_scores[fold][i] for i in range(3))
-                for fold in fl_scores}
-    output = []
-    for key, scores in sorted(folds.items()):
-        if set(scores) != set(range(10)):
-            raise ValueError("confidence intervals require all ten outer folds")
-        for i, metric in enumerate(("macro_f1", "balanced_accuracy", "weighted_f1")):
-            values = [scores[fold][i] for fold in range(10)]
-            mean = statistics.mean(values)
-            half_width = T_975_DF9 * statistics.stdev(values) / math.sqrt(10)
-            output.append(dict(zip(("model", "analysis", "training_domain", "subset_size"), key),
-                               metric=metric, mean=mean, ci_low=mean-half_width, ci_high=mean+half_width))
-    return output
+        lab_folds = groups.get((model, analysis, "Formal_Lab", size))
+        if domain != "FL" or lab_folds is None:
+            continue
+        if set(fl_folds) != set(lab_folds):
+            raise ValueError("FL and Lab outer folds must match for paired comparisons")
+        paired_key = (model, analysis, "FL_minus_Formal_Lab", size)
+        groups[paired_key] = {}
+        for fold in fl_folds:
+            first, second = fl_folds[fold], lab_folds[fold]
+            paired = dict(zip(GROUP_NAMES, paired_key), outer_fold=fold)
+            paired.update({metric: first[metric] - second[metric] for metric in SCORE_NAMES})
+            paired["per_class"] = []
+            for c, name in enumerate(CLASSES):
+                a, b = first["per_class"][c], second["per_class"][c]
+                if a["support_per_seed"] != b["support_per_seed"]:
+                    raise ValueError("paired domains must use identical true class support")
+                paired["per_class"].append({
+                    "class_id": c, "class_name": name, "support_per_seed": a["support_per_seed"],
+                    "contributing_seeds": min(a["contributing_seeds"], b["contributing_seeds"]),
+                    **{metric: a[metric] - b[metric] if a[metric] is not None and b[metric] is not None else None
+                       for metric in CLASS_SCORE_NAMES}})
+            groups[paired_key][fold] = paired
+
+    summary, class_summary, fold_rows = [], [], []
+    for key, folds in sorted(groups.items()):
+        if set(folds) != set(range(10)):
+            raise ValueError("evaluation requires all ten outer folds")
+        context = dict(zip(GROUP_NAMES, key))
+        ordered = [folds[fold] for fold in range(10)]
+        fold_rows.extend(ordered)
+        for metric in SCORE_NAMES:
+            summary.append({**context, "metric": metric, **_interval(r[metric] for r in ordered)})
+        for c, name in enumerate(CLASSES):
+            for metric in CLASS_SCORE_NAMES:
+                class_summary.append({**context, "class_id": c, "class_name": name, "metric": metric,
+                                      **_interval(r["per_class"][c][metric] for r in ordered)})
+    return {"summary": summary, "participants": participant_rows, "folds": fold_rows,
+            "confusions": confusions, "class_summary": class_summary}
+
+
+def aggregate_results(predictions_path):
+    """Backward-compatible summary API, now including participant accuracy."""
+    return evaluate_results(predictions_path)["summary"]
+
+
+def print_evaluation(report, detail="summary"):
+    """Print selected evaluation detail directly; no additional output files."""
+    if detail not in ("summary", "participants", "classes", "confusion", "folds", "all"):
+        raise ValueError("unknown evaluation detail")
+
+    def display(value):
+        if value is None:
+            return "NA"
+        return f"{value:.6f}" if isinstance(value, (float, np.floating)) else str(value)
+
+    def table(title, rows, columns):
+        print("\n" + title)
+        print(" | ".join(columns))
+        for row in rows:
+            print(" | ".join(display(row.get(column)) for column in columns))
+
+    context = ["model", "analysis", "training_domain", "subset_size"]
+    if detail in ("summary", "all"):
+        print("Participant-balanced scores: people -> three seeds -> ten outer folds; approximate 95% t intervals.")
+        table("Overall scores", report["summary"], context + ["metric", "mean", "ci_low", "ci_high", "contributing_folds"])
+    if detail in ("participants", "all"):
+        table("Individual participant scores", report["participants"],
+              context + ["outer_fold", "subset_seed", "test_participant"] + list(SCORE_NAMES))
+    if detail in ("folds", "all"):
+        table("Outer-fold scores after averaging participants and seeds", report["folds"],
+              context + ["outer_fold"] + list(SCORE_NAMES))
+    if detail in ("classes", "all"):
+        print("\nNA means no true support. Class averages exclude NA at each level; CIs require ten contributing folds.")
+        table("Per-class aggregate scores", report["class_summary"],
+              context + ["class_name", "metric", "mean", "ci_low", "ci_high", "contributing_folds"])
+        person_classes = ({**{k: v for k, v in row.items() if k != "per_class"}, **item}
+                          for row in report["participants"] for item in row["per_class"])
+        table("Per-class participant scores and true supports", person_classes,
+              context + ["outer_fold", "subset_seed", "test_participant", "class_name", "support"] + list(CLASS_SCORE_NAMES))
+        fold_classes = ({**{k: v for k, v in row.items() if k != "per_class"}, **item}
+                        for row in report["folds"] for item in row["per_class"])
+        table("Per-class fold scores; support counts are averaged over seeds, not added repeatedly", fold_classes,
+              context + ["outer_fold", "class_name", "support_per_seed", "contributing_seeds"] + list(CLASS_SCORE_NAMES))
+    if detail in ("confusion", "all"):
+        print("\nConfusion matrices: rows are true classes; columns are predicted classes in this order: " + ", ".join(CLASSES))
+        print("Pooled counts describe window totals only. The second matrix averages each eligible participant's normalized row.")
+        for row in report["confusions"]:
+            print("\n" + ", ".join(f"{key}={row[key]}" for key in CONDITION_NAMES))
+            for name in ("pooled_counts", "participant_balanced_row_normalized"):
+                print(name)
+                for cls, values in zip(CLASSES, row[name]):
+                    print(cls + " | " + " | ".join(display(value) for value in values))
+            print("Contributing participants by true class:", row["contributing_participants_per_class"])

@@ -36,13 +36,13 @@ The study uses nested participant-level cross-validation with frozen splits. Par
 
 ### Training-set sizes and repetitions
 
-The main analysis evaluates participant training-set sizes of 6, 9, 12, 15, and 18. Each size is repeated using subset seeds 17, 42, and 73. The participant subsets and their ordering are fixed in the supplied split manifests.
+The main analysis evaluates participant training-set sizes of **6, 12, and 18**. This is the predeclared shorter schedule, adopted for the team's computing budget in protocol `paaws_shared_v3`. Each size is repeated using subset seeds 17, 42, and 73. The participant subsets and their ordering are fixed in the supplied split manifests. The original manifests still contain sizes 9 and 15; the runner does not schedule them.
 
-The complete main schedule covers both training domains, ten outer folds, five participant sizes, and three subset seeds. A matched sensitivity analysis is also included at a participant size of 18 to compare free-living and laboratory training using matched participant-by-class window lists.
+The complete main schedule covers both training domains, ten outer folds, three participant sizes, and three subset seeds: 180 conditions. A matched sensitivity analysis adds 60 conditions at a participant size of 18 to compare free-living and laboratory training using matched participant-by-class window lists. With three hyperparameter candidates this requires **2,040 fits per model**, compared with 3,240 for the five-size schedule (about 37% fewer fits). `python run.py plan` calculates the count from each model's actual grid.
 
 ### Inner model selection
 
-For every model, training domain, outer fold, participant size, and subset seed:
+For every main-analysis model, training domain, outer fold, participant size, and subset seed:
 
 1. The selected training participants are loaded in their frozen order.
 2. Each hyperparameter candidate is evaluated using three inner participant folds.
@@ -53,7 +53,9 @@ For every model, training domain, outer fold, participant size, and subset seed:
 7. A new model is fitted on all selected training participants.
 8. The refitted model predicts the complete eligible free-living data for the held-out outer-fold participants.
 
-This ordering prevents information from the held-out participants or inner validation folds from affecting preprocessing, class weighting, hyperparameter selection, or model fitting.
+For matched analysis, tune separately on matched seed 17 within each outer fold and training domain. Seeds 42 and 73 reuse that selected hyperparameter, then each receives its own fresh refit on its registered matched rows. The main-analysis choice is not reused for matched analysis. FT integration must also explicitly accept reuse of the seed-17 selected refit epoch count.
+
+This ordering prevents outer-test information from affecting training or selection. Inner validation affects hyperparameter selection (and FT checkpoint selection) only; preprocessing and class weights use the current training fold.
 
 ## Models
 
@@ -79,7 +81,7 @@ The shared runner contains an integration interface for an FT-Transformer model.
 
 Training-only inverse-frequency class weights are calculated within each training fold and normalised to have mean one. Validation and test metrics are unweighted within each participant.
 
-The primary selection metric is participant-balanced Macro-F1. Additional summaries include balanced accuracy and weighted F1.
+The primary selection metric is participant-balanced Macro-F1. Additional summaries include balanced accuracy, weighted F1 and accuracy. Saved predictions also support per-participant scores, per-class precision/recall/F1 and supports, individual fold scores, and confusion matrices. A class absent from a participant's true labels is NA and excluded from that participant's class average, matching the original scoring convention.
 
 Final results are aggregated in the following order:
 
@@ -96,7 +98,17 @@ The experiment is frozen by `experiment.lock.json`. The lock records hashes for 
 
 The supplied split files must not be regenerated independently. Any intended protocol change should be released as a coordinated new experiment version rather than mixed into an existing result directory.
 
-Interrupted runs are recoverable. Each model output directory uses a SQLite progress database for completed fits, model checkpoints, tuning selections, timing information, and prediction chunks. Repeating the same command resumes completed work instead of starting again.
+Interrupted runs are recoverable. The separate local `recovery/<model>/progress.sqlite3` stores completed inner-fit scores, model checkpoints, tuning selections, timing information and prediction chunks. `recovery/<model>/run.lock` prevents simultaneous writers using that recovery folder. These are additional internal files; only the two CSV files belong in `outputs/<model>/`. Repeating the same command with the same output and recovery locations resumes completed work. An interrupted in-progress fit restarts; completed saved fits are reused.
+
+Recovery is bound to the experiment, model, installed environment and resolved output path. Saved export hashes prevent missing, unidentified or older recovery data from overwriting newer results. CSVs are prepared in the recovery folder; a recorded transition permits recovery even if export stops between replacing the two files. Keep both locations in place on the same filesystem while running, and do not start concurrent jobs writing the same output folder. If only the two result files are available, `validate` and `evaluate` still work; `run`/`export` refuse to invent replacement recovery data. For a separate new run, choose both a new `--output` and a new `--recovery-dir`. Do not mix v2 recovery or results with this v3 package.
+
+After every fit the runner prints elapsed training time and the model's reported iterations, actual boosting rounds or epochs. This information is retained in the recovery database without adding columns to the agreed result files.
+
+### Shared loader and scoring origin
+
+All three adapters must use this folder's `data.py` and `metrics.py` through `run.py`. The consolidated loader carries forward the corrected team `paaws_pipeline` data loader and registered split-manifest logic from `team_shared_code_and_manifests_v1.zip` and the supplied corrected `data.py`. The manual metrics retain the original confusion-matrix formulas, absent-class convention, participant averaging, training-only class weights and ten-fold t-interval. There is no need to restore the old import path or maintain a second loader.
+
+`test_experiment.py` retains regression checks for original manifest membership and nested subsets, participant exclusion, matched row selection, training-only scaling, independently calculated scoring/weighting formulas and the final aggregation. The feature shards and split files are unchanged. Git attributes preserve the original plain split-CSV bytes so another computer can verify the same frozen hashes.
 
 ## Repository structure
 
@@ -112,6 +124,8 @@ data/shards/                Processed participant/domain feature files
 splits/                     Frozen outer, inner, and matched manifests
 test_experiment.py          Synthetic integrity and recovery tests
 requirements.txt            Python dependencies
+outputs/<model>/            Only tuning.csv and predictions.csv.gz (generated)
+recovery/<model>/           Local progress database and process lock (generated)
 ```
 
 ## Setup
@@ -165,7 +179,7 @@ Formal test scores must not be used to revise model settings or hyperparameter g
 
 ## Outputs and validation
 
-Each completed model produces two main handoff files:
+Each completed model produces exactly two handoff result files:
 
 ```text
 outputs/<model>/tuning.csv
@@ -186,13 +200,26 @@ For an intentionally incomplete run:
 python run.py validate --model lightgbm --allow-partial
 ```
 
-After a complete result set passes validation, generate fold-level summaries with:
+After the full result set passes validation, print the study summaries with:
 
 ```bash
-python run.py summarise --model lightgbm
+python run.py evaluate --model lightgbm
 ```
 
-Generated outputs, recovery databases, environments, and model checkpoints are excluded from version control. Participant-level predictions should be handled using the project's approved secure sharing process.
+`summarise` is an alias for `evaluate`. Neither command creates another CSV or requires the recovery database. Select additional detail as needed:
+
+```bash
+python run.py evaluate --model lightgbm --detail participants
+python run.py evaluate --model lightgbm --detail classes
+python run.py evaluate --model lightgbm --detail folds
+python run.py evaluate --model lightgbm --detail confusion --analysis main --domain FL --subset-size 6 --outer-fold 0 --subset-seed 17
+```
+
+`--detail all` prints everything. Filters restrict displayed rows after full-study aggregation; choosing a fold/seed does not recalculate study means or confidence intervals from that smaller selection. Evaluation requires the complete frozen result set; `validate --allow-partial` checks progress during a run.
+
+Confusion matrices show true classes in rows and predicted classes in columns. Pooled window counts are descriptive; the accompanying normalized matrix gives each eligible participant equal weight. Per-class summaries report the number of contributing folds; a class with fewer than ten contributing folds has no ten-fold confidence interval.
+
+Generated outputs, local recovery files, environments, and model checkpoints are excluded from version control. Participant-level predictions should be handled using the project's approved secure sharing process.
 
 ## Current implementation status
 
