@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent
 
 
 def calibrate(output=None, *, execute=False, smoke=False):
-    output = Path(output or ROOT / 'analysis/ft_calibration_v1').resolve()
+    output = Path(output or ROOT / 'analysis/ft_calibration_v4').resolve()
     base = run.read_config(ROOT)
     # Verify shared inputs and the already-frozen baseline before calibration.
     run.verify_frozen(ROOT, base, 'lightgbm')

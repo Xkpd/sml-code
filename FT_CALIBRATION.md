@@ -23,6 +23,25 @@ the long-run switch disabled.
 
 ## Running the code
 
+### v4 alignment and epoch diagnostic (2026-10-05)
+
+The working integration branch now incorporates origin/main at aff250b (protocol
+v4), retaining the implemented FT adapter in place of the remote placeholder.
+Shared runner, data, metrics, results, experiment.json and experiment.lock.json
+match that revision. Formal FT status remains pending. The preserved v3 commit
+and original analysis/ft_calibration_v1 results remain available.
+
+The default calibration output is now analysis/ft_calibration_v4, preventing
+accidental reuse of the v3 recovery database under a new shared protocol.
+`python diagnose_ft_epochs.py` runs a separate 12-fit diagnostic into
+analysis/ft_epoch100_v4: outer7/n6/Lab, all three rates and all three inner folds;
+outer0/n18/Lab, LR=0.0001 and all three inner folds. It raises only max_epochs
+to 100, preserving patience=8 and the original model settings. The process uses
+below-normal Windows priority and the adapter's four CPU threads, sequentially.
+The original calibration recovery database is opened read-only. Reruns may
+vary on GPU; the report records common-prefix curve differences, rather than
+assuming that every score difference is caused by the higher epoch limit.
+
 The adapter implements the shared runner's fit, predict_proba, serialize and
 deserialize contracts. It uses the project's compact numerical FT architecture:
 64-dimensional tokens, 2 blocks, 4 heads, ReGLU, batch size 512, AdamW,
