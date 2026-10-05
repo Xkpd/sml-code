@@ -1,0 +1,32 @@
+[
+  {
+    "source": "analysis/ft_calibration_v1/calibration.json",
+    "file": "calibration_50epochs_v3/calibration.json",
+    "sha256": "8452a9c66cdcbb5e916f1fdcfc19c442c074f44e37b3880e7a0ed45bc46b051f"
+  },
+  {
+    "source": "analysis/ft_calibration_v1/calibration_report.md",
+    "file": "calibration_50epochs_v3/calibration_report.md",
+    "sha256": "4e1196eb730261e418bc507d8a88c5af5b56068e33b512de81e095cfa8c6bb0f"
+  },
+  {
+    "source": "analysis/ft_epoch100_v4/diagnostic.json",
+    "file": "diagnostic_100epochs_v4/diagnostic.json",
+    "sha256": "9b764c1e76cfef30ad35d60350395d2f5aca9e84772d148669223a997ab6fb88"
+  },
+  {
+    "source": "analysis/ft_epoch100_v4/diagnostic_report.md",
+    "file": "diagnostic_100epochs_v4/diagnostic_report.md",
+    "sha256": "7d44e7e2ae5822c3af34a471eee53dc31ee4864ff5764839da0e46b1d858e5ed"
+  },
+  {
+    "source": "analysis/ft_epoch100_v4/epoch_curves.png",
+    "file": "diagnostic_100epochs_v4/epoch_curves.png",
+    "sha256": "915260ec3331a21a9f3cb29f22957e5799d590634baf122d70fa53320d8d1de2"
+  },
+  {
+    "source": "analysis/ft_epoch100_v4/结论与后续.md",
+    "file": "diagnostic_100epochs_v4/conclusions_zh.md",
+    "sha256": "763adb30b1697bfc307ca91b4b7945c8ec1bb2b0bf9b7658caa77508283c54d1"
+  }
+]
