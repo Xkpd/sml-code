@@ -3,5 +3,5 @@ numpy==2.4.6
 scipy==1.17.1
 scikit-learn==1.9.1
 lightgbm==4.7.0
-# Person 3 adds a documented compatible PyTorch installation for their GPU.
+# Add and document a compatible PyTorch installation before enabling FT-Transformer.
 # PyTorch is deliberately not imported by the shared runner or the other models.

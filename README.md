@@ -36,7 +36,7 @@ The study uses nested participant-level cross-validation with frozen splits. Par
 
 ### Training-set sizes and repetitions
 
-The main analysis evaluates participant training-set sizes of **6, 12, and 18**. This is the predeclared shorter schedule, adopted for the team's computing budget in protocol `paaws_shared_v3`. Each size is repeated using subset seeds 17, 42, and 73. The participant subsets and their ordering are fixed in the supplied split manifests. The original manifests still contain sizes 9 and 15; the runner does not schedule them.
+The main analysis evaluates participant training-set sizes of **6, 12, and 18**. This is the predeclared shorter schedule, adopted for the team's computing budget in protocol `paaws_shared_v4`. Each size is repeated using subset seeds 17, 42, and 73. The participant subsets and their ordering are fixed in the supplied split manifests. The original manifests still contain sizes 9 and 15; the runner does not schedule them.
 
 The complete main schedule covers both training domains, ten outer folds, three participant sizes, and three subset seeds: 180 conditions. A matched sensitivity analysis adds 60 conditions at a participant size of 18 to compare free-living and laboratory training using matched participant-by-class window lists. With three hyperparameter candidates this requires **2,040 fits per model**, compared with 3,240 for the five-size schedule (about 37% fewer fits). `python run.py plan` calculates the count from each model's actual grid.
 
@@ -68,7 +68,8 @@ This ordering prevents outer-test information from affecting training or selecti
 
 ### LightGBM
 
-- Candidate leaf counts: `num_leaves = 127, 255, 511`.
+- Candidate leaf counts: `num_leaves = 63, 127, 255`.
+- The inner-only pilot also evaluated 31 and 511 leaves. FL validation improved through 255 leaves but not at 511; Formal_Lab peaked at 127. The formal grid therefore retains both pilot optima and removes the substantially slower 511-leaf candidate.
 - Raw engineered features are used without standardisation.
 - Training uses a learning rate of 0.05 and a maximum of 300 boosting rounds.
 - The candidate with the highest validation score is selected; exact ties prefer fewer leaves.
@@ -100,7 +101,7 @@ The supplied split files must not be regenerated independently. Any intended pro
 
 Interrupted runs are recoverable. The separate local `recovery/<model>/progress.sqlite3` stores completed inner-fit scores, model checkpoints, tuning selections, timing information and prediction chunks. `recovery/<model>/run.lock` prevents simultaneous writers using that recovery folder. These are additional internal files; only the two CSV files belong in `outputs/<model>/`. Repeating the same command with the same output and recovery locations resumes completed work. An interrupted in-progress fit restarts; completed saved fits are reused.
 
-Recovery is bound to the experiment, model, installed environment and resolved output path. Saved export hashes prevent missing, unidentified or older recovery data from overwriting newer results. CSVs are prepared in the recovery folder; a recorded transition permits recovery even if export stops between replacing the two files. Keep both locations in place on the same filesystem while running, and do not start concurrent jobs writing the same output folder. If only the two result files are available, `validate` and `evaluate` still work; `run`/`export` refuse to invent replacement recovery data. For a separate new run, choose both a new `--output` and a new `--recovery-dir`. Do not mix v2 recovery or results with this v3 package.
+Recovery is bound to the experiment, model, installed environment and resolved output path. Saved export hashes prevent missing, unidentified or older recovery data from overwriting newer results. CSVs are prepared in the recovery folder; a recorded transition permits recovery even if export stops between replacing the two files. Keep both locations in place on the same filesystem while running, and do not start separate commands writing the same output folder. The runner's own LightGBM worker mode is coordinated through one locked recovery database. If only the two result files are available, `validate` and `evaluate` still work; `run`/`export` refuse to invent replacement recovery data. For a separate new run, choose both a new `--output` and a new `--recovery-dir`. Do not mix older recovery or results with this v4 package.
 
 After every fit the runner prints elapsed training time and the model's reported iterations, actual boosting rounds or epochs. This information is retained in the recovery database without adding columns to the agreed result files.
 
@@ -119,6 +120,7 @@ run.py                      Shared tune, select, refit, test, and export runner
 data.py                     Data and frozen-split loading
 metrics.py                  Metrics and training class weights
 results.py                  Output validation and result summaries
+graph/plot.py               Three research figures from completed model results
 models/                     Model adapters
 data/shards/                Processed participant/domain feature files
 splits/                     Frozen outer, inner, and matched manifests
@@ -161,8 +163,10 @@ Run a model's complete frozen schedule with:
 
 ```bash
 python run.py run --model lr
-python run.py run --model lightgbm
+python run.py run --model lightgbm --workers 3 --threads-per-fit 3
 ```
+
+The LightGBM command above assigns complete outer folds to three coordinated workers and limits each fit to three CPU threads. This targets nine training threads on a 10-core M1 Max. Conditions from one outer fold remain together, preserving matched seed-17 tuning reuse. Use `--workers 1` on a lower-memory computer. Worker count and CPU-thread allocation change execution throughput only; the frozen data, model settings, splits and result schema are unchanged.
 
 A single condition can be run or resumed by specifying its analysis, domain, outer fold, participant size, and subset seed:
 
@@ -220,6 +224,39 @@ python run.py evaluate --model lightgbm --detail confusion --analysis main --dom
 Confusion matrices show true classes in rows and predicted classes in columns. Pooled window counts are descriptive; the accompanying normalized matrix gives each eligible participant equal weight. Per-class summaries report the number of contributing folds; a class with fewer than ten contributing folds has no ten-fold confidence interval.
 
 Generated outputs, local recovery files, environments, and model checkpoints are excluded from version control. Participant-level predictions should be handled using the project's approved secure sharing process.
+
+## Research graphs
+
+The `graph` folder needs only one source file, `plot.py`. After the model runs are complete, collect each model's existing `tuning.csv` and `predictions.csv.gz` under `outputs/<model>/`, where the model folders are `multinomial_logistic_regression`, `lightgbm` and `ft_transformer`.
+
+Install the plotting dependency separately, then run from this project folder:
+
+```bash
+python -m pip install matplotlib==3.11.2
+python graph/plot.py
+```
+
+This creates only three figure files alongside the script:
+
+| Figure | Research question addressed |
+|---|---|
+| `graph/learning_curves.png` | How does participant Macro-F1 change with 6/12/18 labelled training participants, for each model and training domain? |
+| `graph/domain_comparison.png` | At 18 participants, how do FL and Lab compare before and after matching participant-by-class window counts? Includes the paired FL-minus-Lab differences. |
+| `graph/class_f1.png` | At 18 participants in the main analysis, which of the four activities are difficult for each model and training domain? |
+
+All figures evaluate unseen FL participants. The script validates complete outputs against the frozen experiment and uses `results.py` for every score and confidence interval. It does not fit models or write extra CSV files. Incomplete conditions are rejected. A subset of completed models can be drawn explicitly, for example:
+
+```bash
+python graph/plot.py --models lr lightgbm
+```
+
+The figures name the models shown; missing models are never treated as zero scores. The default command requires all three models. Optional `--results-dir PATH` changes the parent input folder; `--output-dir PATH` changes the image destination. Images cannot be saved inside the model results, recovery or input-data folders. Running again replaces the same three images, so there is no accumulation of dated copies.
+
+Error bars are the existing approximate 95% t intervals across ten outer-fold means after seed averaging. They are not intervals across individual windows or thirty independent seed runs, and are not silently clipped to 0–1. The paired difference uses the shared paired-fold calculation, rather than subtracting separate confidence-interval endpoints. Matched comparisons control counts but do not establish a causal domain effect.
+
+Class F1 follows the agreed absent-class convention: unsupported values are shown as NA; fewer than ten contributing folds are labelled and have no ten-fold interval. Do not average these plotted class means to reconstruct primary participant Macro-F1. More detailed precision, recall, accuracy and confusion matrices remain available through `run.py evaluate --detail ...`; they are not extra default graphs.
+
+Matplotlib is only a plotting dependency. The frozen training requirements and experiment lock are unchanged by adding this folder.
 
 ## Current implementation status
 

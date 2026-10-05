@@ -18,7 +18,8 @@ from data import Condition, ExperimentData, WindowTable, fit_standardizer, load_
 from metrics import classification_metrics, inverse_frequency_sample_weights, participant_macro_f1
 from results import (PREDICTION_FIELDS, TUNING_FIELDS, aggregate_results, prediction_csv_bytes,
                      select_candidate, validate_outputs, write_csv_atomic)
-from run import Progress, Runner, conditions, freeze, read_config, single_writer, verify_frozen
+from run import (Progress, Runner, conditions, freeze, partition_conditions_by_outer_fold,
+                 read_config, run_conditions, single_writer, verify_frozen)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -134,6 +135,27 @@ class SharedExperimentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             load_split(self.data, c, inner_fold=0, include_outer_test=True)
         self.assertEqual(self.data.outer_calls, 0)
+
+    def test_parallel_partition_keeps_each_outer_fold_on_one_worker(self):
+        selected = list(conditions(self.config))
+        groups = partition_conditions_by_outer_fold(selected, 3)
+        self.assertEqual([len({c.outer_fold for c in group}) for group in groups], [4, 3, 3])
+        self.assertEqual({c.key for group in groups for c in group}, {c.key for c in selected})
+        owners = {}
+        for worker, group in enumerate(groups):
+            for fold in {condition.outer_fold for condition in group}:
+                self.assertNotIn(fold, owners)
+                owners[fold] = worker
+        for fold in range(10):
+            self.assertEqual(sum(any(c.outer_fold == fold for c in group) for group in groups), 1)
+
+    def test_parallel_workers_share_recovery_without_losing_conditions(self):
+        selected = [Condition("main", "Formal_Lab", fold, 17, 6) for fold in range(3)]
+        with redirect_stdout(io.StringIO()):
+            run_conditions(self.runner, selected, workers=3)
+        self.assertEqual(len(self.adapter.calls), 30)
+        self.assertEqual(self.data.outer_calls, 3)
+        self.assertTrue(all(self.runner.progress.get("predictions", c.key) is not None for c in selected))
 
     def test_complete_condition_and_resume(self):
         c = Condition("main", "Formal_Lab", 0, 17, 6)
