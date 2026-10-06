@@ -31,7 +31,7 @@
       "status": "ready",
       "module": "models.lightgbm",
       "hyperparameter_name": "num_leaves",
-      "grid": [127, 255,511],
+      "grid": [63, 127, 255, 511],
       "selection_rule": "exact_max_then_lower_value",
       "selection_tolerance": 0.0,
       "settings": {

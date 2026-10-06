@@ -68,8 +68,8 @@ This ordering prevents outer-test information from affecting training or selecti
 
 ### LightGBM
 
-- Candidate leaf counts: `num_leaves = 63, 127, 255`.
-- The inner-only pilot also evaluated 31 and 511 leaves. FL validation improved through 255 leaves but not at 511; Formal_Lab peaked at 127. The formal grid therefore retains both pilot optima and removes the substantially slower 511-leaf candidate.
+- Candidate leaf counts: `num_leaves = 63, 127, 255, 511`.
+- The completed run used all four predeclared candidates. This preserves the lower-complexity option and records whether validation continues to improve at the upper boundary; the larger candidate is slower and its boundary-selection frequency must be reported when discussing grid adequacy.
 - Raw engineered features are used without standardisation.
 - Training uses a learning rate of 0.05 and a maximum of 300 boosting rounds.
 - The candidate with the highest validation score is selected; exact ties prefer fewer leaves.

@@ -125,7 +125,8 @@
         "grid": [
           63,
           127,
-          255
+          255,
+          511
         ],
         "selection_rule": "exact_max_then_lower_value",
         "selection_tolerance": 0.0,
@@ -141,8 +142,8 @@
         },
         "preprocessing": "none"
       },
-      "source_sha256": "f150fec05411c5c6d24a322819c49f63bec1314a6f6f48d545ea56b34489d32d",
-      "sha256": "678eaf3eda3c8a4512a60ea668fa7cbf10d6982991692fa093a68c647777a67d"
+      "source_sha256": "792eed0c6d5a7bf89b0d74e97b672971a9e832f25e987bf9bea12892cd2f8d8d",
+      "sha256": "4da38dd9a50ec29c0d0b84bced90f49d1b6a6685409eaf5d958780bef2c10f37"
     },
     "ft_transformer": {
       "spec": {

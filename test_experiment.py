@@ -126,11 +126,11 @@ class SharedExperimentTests(unittest.TestCase):
         self.assertEqual(len(planned), 240)
         self.assertEqual(len({c.key for c in planned}), len(planned))
         self.assertEqual(planned_workload(self.config, "lightgbm"),
-                         {"conditions": 240, "tuned_conditions": 200, "inner_fits": 1800,
-                          "refits": 240, "fits": 2040})
+                         {"conditions": 240, "tuned_conditions": 200, "inner_fits": 2400,
+                          "refits": 240, "fits": 2640})
         expanded = copy.deepcopy(self.config)
         expanded["models"]["lightgbm"]["grid"].append(1023)
-        self.assertEqual(planned_workload(expanded, "lightgbm")["fits"], 2640)
+        self.assertEqual(planned_workload(expanded, "lightgbm")["fits"], 3240)
         c = Condition("main", "Formal_Lab", 0, 17, 6)
         with self.assertRaises(ValueError):
             load_split(self.data, c, inner_fold=0, include_outer_test=True)
@@ -153,7 +153,7 @@ class SharedExperimentTests(unittest.TestCase):
         selected = [Condition("main", "Formal_Lab", fold, 17, 6) for fold in range(3)]
         with redirect_stdout(io.StringIO()):
             run_conditions(self.runner, selected, workers=3)
-        self.assertEqual(len(self.adapter.calls), 30)
+        self.assertEqual(len(self.adapter.calls), 39)
         self.assertEqual(self.data.outer_calls, 3)
         self.assertTrue(all(self.runner.progress.get("predictions", c.key) is not None for c in selected))
 
@@ -162,11 +162,11 @@ class SharedExperimentTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             self.runner.run_condition(c)
             self.runner.run_condition(c)
-        self.assertEqual(len(self.adapter.calls), 10)
+        self.assertEqual(len(self.adapter.calls), 13)
         self.assertEqual(self.data.outer_calls, 1)
         self.runner.export()
         report = self.validate()
-        self.assertEqual((report["tuning_rows"], report["prediction_rows"]), (9, 16))
+        self.assertEqual((report["tuning_rows"], report["prediction_rows"]), (12, 16))
         self.assertFalse(report["complete"])
         with self.assertRaises(ValueError):
             self.validate(complete=True)
@@ -179,11 +179,11 @@ class SharedExperimentTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             for seed in (42, 73, 17):
                 self.runner.run_condition(Condition("matched", "FL", 0, seed, 18))
-        self.assertEqual(len(self.adapter.calls), 12)  # 9 seed17 inner fits + 3 fresh refits
+        self.assertEqual(len(self.adapter.calls), 15)  # 12 seed17 inner fits + 3 fresh refits
         self.assertEqual([c[1] for c in self.adapter.calls if c[2]], [42, 73, 17])
         self.assertTrue(all(c[1] == 17 for c in self.adapter.calls if not c[2]))
         self.runner.export()
-        self.assertEqual(self.validate()["tuning_rows"], 9)
+        self.assertEqual(self.validate()["tuning_rows"], 12)
         with (self.path / "output/tuning.csv").open() as handle:
             self.assertEqual({r["subset_seed"] for r in csv.DictReader(handle)}, {"17"})
 
@@ -197,7 +197,7 @@ class SharedExperimentTests(unittest.TestCase):
         self.data.outer_test = original
         with redirect_stdout(io.StringIO()):
             self.runner.run_condition(c)
-        self.assertEqual(len(self.adapter.calls), 10)
+        self.assertEqual(len(self.adapter.calls), 13)
 
     def test_validator_rejects_missing_window_wrong_truth_and_probability(self):
         with redirect_stdout(io.StringIO()):
@@ -215,7 +215,7 @@ class SharedExperimentTests(unittest.TestCase):
             elif change == "truth":
                 rows[0]["true_activity"] = "3"
             elif change == "selection":
-                rows[0]["hyperparameter_value"] = "511"
+                rows[0]["hyperparameter_value"] = "1023"
             else:
                 rows[0]["sitting_prob"] = "nan"
             write_csv_atomic(path, PREDICTION_FIELDS, rows)
@@ -344,9 +344,9 @@ class SharedExperimentTests(unittest.TestCase):
         self.runner = Runner(self.path, self.config, "lightgbm", self.path / "output", self.frozen,
                              adapter=self.adapter, data=self.data, runtime={"synthetic": True}, require_existing=True)
         self.assertEqual(self.runner.export(), 2)
-        self.assertEqual(len(self.adapter.calls), 20)
+        self.assertEqual(len(self.adapter.calls), 26)
         report = self.validate()
-        self.assertEqual((report["tuning_rows"], report["prediction_rows"]), (18, 32))
+        self.assertEqual((report["tuning_rows"], report["prediction_rows"]), (24, 32))
 
     def test_selection_rules_and_training_only_scaling(self):
         rows = [{"hyperparameter_value": value, "inner_fold": fold,
