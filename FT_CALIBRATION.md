@@ -148,3 +148,28 @@ scores were used to choose these changes. Further optional calibration is
 available through `python calibrate_ft.py --execute`, isolated in
 `analysis/ft_calibration_final_v4`, and never replaces the historical reports.
 Do not adjust the grid or stopping policy after inspecting formal outer scores.
+
+### Upper learning-rate check after the final calibration
+
+If the completed final calibration selects its upper endpoint (`0.001`), test
+`0.003` only on those winning conditions before any formal outer evaluation:
+
+```bash
+python calibrate_ft.py --upper-lr-diagnostic
+python calibrate_ft.py --execute --upper-lr-diagnostic
+```
+
+The first command must print the planned number of conditions/fits and performs
+no training. For the current final calibration it prints 4 conditions and 12
+inner fits. The second command writes to
+`analysis/ft_upper_lr_diagnostic_v4`; it neither edits `experiment.json` nor the
+lock and cannot access outer-test data. It reads the baseline from
+`analysis/ft_calibration_final_v4/calibration.json`. If that file is elsewhere,
+pass `--baseline /path/to/calibration.json`.
+
+The output `calibration.json` contains `diagnostic.comparisons`, including the
+mean participant Macro-F1 for `0.001`, the new mean for `0.003`, and their
+difference for every checked condition. Keep `0.003` only if it improves
+repeatedly by a meaningful amount. Decide and freeze the formal grid before
+starting `python run.py run --model ft`; diagnostic results are not formal model
+outputs and must not be placed under `outputs/ft_transformer`.
