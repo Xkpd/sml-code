@@ -11,19 +11,18 @@ from unittest.mock import patch
 
 from data import Condition, ExperimentData
 import run
-from models.ft_transformer import FTConfig
 
 ROOT = Path(__file__).resolve().parent
 
 
 def calibrate(output=None, *, execute=False, smoke=False):
-    output = Path(output or ROOT / 'analysis/ft_calibration_v4').resolve()
+    default = 'analysis/ft_smoke_final_v4' if smoke else 'analysis/ft_calibration_final_v4'
+    output = Path(output or ROOT / default).resolve()
     base = run.read_config(ROOT)
-    # Verify shared inputs and the already-frozen baseline before calibration.
-    run.verify_frozen(ROOT, base, 'lightgbm')
+    # Verify the final adapter/settings as well as the common frozen inputs.
+    run.verify_frozen(ROOT, base, 'ft_transformer')
     config = copy.deepcopy(base)
-    settings = asdict(FTConfig())
-    settings.pop('seed')
+    settings = copy.deepcopy(base['models']['ft_transformer']['settings'])
     if smoke:
         settings['max_epochs'] = 1
     spec = config['models']['ft_transformer']

@@ -1,7 +1,7 @@
 """Small synthetic tests: no real PAAWS model fitting or outer-test evaluation."""
 from __future__ import annotations
 
-from contextlib import redirect_stdout
+from contextlib import closing, redirect_stdout
 import copy
 import csv
 import gzip
@@ -274,11 +274,11 @@ class SharedExperimentTests(unittest.TestCase):
             Progress(missing, {"identity": "test"}, require_existing=True)
         self.assertFalse(missing.exists())
         unknown = self.path / "unknown.sqlite3"
-        with sqlite3.connect(unknown) as db:
+        with closing(sqlite3.connect(unknown)) as db, db:
             db.execute("CREATE TABLE unrelated (value TEXT)")
         with self.assertRaises(ValueError):
             Progress(unknown, {"identity": "test"})
-        with sqlite3.connect(unknown) as db:
+        with closing(sqlite3.connect(unknown)) as db, db:
             if db.execute("SELECT name FROM sqlite_master WHERE name='items'").fetchone():
                 self.assertIsNone(db.execute("SELECT value FROM items WHERE kind='metadata' AND key='identity'").fetchone())
 
@@ -301,7 +301,7 @@ class SharedExperimentTests(unittest.TestCase):
             self.runner.run_condition(Condition("main", "FL", 0, 17, 6))
         self.runner.export()
         backup = self.path / "older.sqlite3"
-        with sqlite3.connect(backup) as database:
+        with closing(sqlite3.connect(backup)) as database, database:
             self.runner.progress.db.backup(database)
         with redirect_stdout(io.StringIO()):
             self.runner.run_condition(Condition("main", "FL", 0, 42, 6))
@@ -470,6 +470,9 @@ class ProtocolIntegrityTests(unittest.TestCase):
             freeze(self.path, self.config)
 
     def test_finishing_ft_preserves_frozen_lr_but_changing_lr_is_blocked(self):
+        # Exercise the pre-integration state even after the real FT is ready.
+        self.config["models"]["ft_transformer"].update(
+            status="pending", settings={}, matched_epoch_policy=None)
         self.fingerprint_fixture()
         lr = "multinomial_logistic_regression"
         first = freeze(self.path, self.config)
@@ -477,7 +480,7 @@ class ProtocolIntegrityTests(unittest.TestCase):
             verify_frozen(self.path, self.config, "ft_transformer")
         updated = copy.deepcopy(self.config)
         updated["models"]["ft_transformer"].update(
-            status="ready", settings={"d_token": 64, "max_epochs": 50},
+            status="ready", settings={"d_token": 64, "max_epochs": 100},
             matched_epoch_policy="reuse_seed17_refit_epochs")
         (self.path / "models/ft_transformer.py").write_bytes(b"finished FT adapter")
         second = freeze(self.path, updated)

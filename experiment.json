@@ -42,16 +42,21 @@
       "preprocessing": "none"
     },
     "ft_transformer": {
-      "status": "pending",
+      "status": "ready",
       "module": "models.ft_transformer",
       "hyperparameter_name": "learning_rate",
       "grid": [0.0001, 0.0003, 0.001],
       "selection_rule": "exact_max_then_lower_value",
       "selection_tolerance": 0.0,
-      "settings": {},
+      "settings": {
+        "d_token": 64, "n_blocks": 2, "n_heads": 4, "ffn_hidden": 128,
+        "attention_dropout": 0.1, "ffn_dropout": 0.1,
+        "batch_size": 512, "max_epochs": 100, "patience": 8,
+        "weight_decay": 0.00001, "amp": true, "deterministic": true
+      },
       "preprocessing": "training_fold_standardization",
       "refit_epoch_rule": "median_of_selected_candidate_best_epochs",
-      "matched_epoch_policy": null
+      "matched_epoch_policy": "reuse_seed17_refit_epochs"
     }
   }
 }

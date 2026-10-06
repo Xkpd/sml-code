@@ -53,7 +53,7 @@ For every main-analysis model, training domain, outer fold, participant size, an
 7. A new model is fitted on all selected training participants.
 8. The refitted model predicts the complete eligible free-living data for the held-out outer-fold participants.
 
-For matched analysis, tune separately on matched seed 17 within each outer fold and training domain. Seeds 42 and 73 reuse that selected hyperparameter, then each receives its own fresh refit on its registered matched rows. The main-analysis choice is not reused for matched analysis. FT integration must also explicitly accept reuse of the seed-17 selected refit epoch count.
+For matched analysis, tune separately on matched seed 17 within each outer fold and training domain. Seeds 42 and 73 reuse that selected hyperparameter, then each receives its own fresh refit on its registered matched rows. The main-analysis choice is not reused for matched analysis. FT likewise reuses the seed-17 selected refit epoch count for these two matched seeds.
 
 This ordering prevents outer-test information from affecting training or selection. Inner validation affects hyperparameter selection (and FT checkpoint selection) only; preprocessing and class weights use the current training fold.
 
@@ -76,7 +76,16 @@ This ordering prevents outer-test information from affecting training or selecti
 
 ### FT-Transformer
 
-The shared runner contains an integration interface for an FT-Transformer model. Its configuration remains marked as pending until the architecture, training settings, checkpoint selection, and final-refit epoch policy are fully implemented and frozen.
+The compact numerical FT-Transformer is implemented and frozen for the shared runner.
+
+- Candidate learning rates: `0.0001, 0.0003, 0.001`; highest mean inner score wins, with exact ties preferring the smaller rate.
+- 64-dimensional tokens, 2 blocks, 4 heads, ReGLU, hidden width 128, dropout 0.1, batch size 512 and AdamW with weight decay 1e-5.
+- Training-fold standardisation and the shared training-only class weights.
+- Inner training: at most 100 epochs, patience 8, restoring the checkpoint with the best participant Macro-F1. Exact epoch ties retain the earliest checkpoint.
+- Final refit: a fresh model, trained for exactly the median of the three selected candidate best epochs. No validation or outer-test-based stopping.
+- CUDA BF16 and explicit deterministic settings. Full runs use one worker on a BF16-capable NVIDIA GPU.
+
+See [FT_CALIBRATION.md](FT_CALIBRATION.md) for setup, the target-GPU check, full-run commands, and the evidence behind the settings. The shared split/evaluation logic and existing LR/LightGBM fingerprints are preserved.
 
 ## Class weighting and metrics
 
@@ -260,4 +269,4 @@ Matplotlib is only a plotting dependency. The frozen training requirements and e
 
 ## Current implementation status
 
-The logistic-regression and LightGBM adapters are implemented and frozen. The FT-Transformer integration remains pending. The package includes automated checks for data leakage guards, split integrity, interruption recovery, model serialisation, selection rules, output validation, and participant-level aggregation.
+All three adapters are implemented and frozen. FT also has tests for training-only scaling, weighted loss, best-checkpoint restoration, exact refit epochs and recovery through the common runner. Run its CUDA preflight on the intended desktop before starting the long experiment; local CPU tests do not establish GPU compatibility. The package includes checks for data leakage guards, split integrity, interruption recovery, model serialisation, selection rules, output validation, and participant-level aggregation.
