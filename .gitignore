@@ -23,10 +23,8 @@ env/
 .vscode/
 
 # Generated experiment outputs and recovery state
-outputs/
 recovery/
 analysis/
-graph/*.png
 *.sqlite3
 *.sqlite3-*
 .run.lock
