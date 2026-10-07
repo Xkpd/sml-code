@@ -24,8 +24,12 @@ MODEL_LABELS = {
 }
 MODEL_COLORS = dict(zip(MODEL_LABELS, ("#0072B2", "#009E73", "#CC79A7")))
 DOMAIN_STYLES = {
-    "FL": {"label": "FL training", "color": "#0072B2", "marker": "o"},
-    "Formal_Lab": {"label": "Lab training", "color": "#D55E00", "marker": "s"},
+    "FL": {"label": "FL training", "linestyle": "-", "marker": "o", "filled": True},
+    "Formal_Lab": {"label": "Lab training", "linestyle": ":", "marker": "s", "filled": False},
+}
+ANALYSIS_STYLES = {
+    "main": {"label": "Natural availability", "marker": "o", "filled": True},
+    "matched": {"label": "Matched counts", "marker": "D", "filled": False},
 }
 FIGURE_NAMES = ("learning_curves.png", "domain_comparison.png", "class_f1.png")
 INTERVAL_NOTE = "Means and approximate 95% t intervals across 10 outer folds, after averaging 3 seeds."
@@ -101,13 +105,15 @@ def score_limits(rows):
     return min([0.0] + values) - .025, max([1.0] + values) + .025
 
 
-def point(ax, x, row, color, marker="o", annotate_support=False):
+def point(ax, x, row, color, marker="o", filled=True, annotate_support=False):
     if row["mean"] is None:
         ax.text(x, .025, "NA", ha="center", color=color, fontsize=8,
                 transform=ax.get_xaxis_transform())
         return
     ax.errorbar(x, row["mean"], yerr=interval_errors(row), fmt=marker,
-                color=color, markersize=6, capsize=3, elinewidth=1.2, zorder=3)
+                color=color, markerfacecolor=color if filled else "white",
+                markeredgecolor=color, markeredgewidth=1.2,
+                markersize=6, capsize=3, elinewidth=1.2, zorder=3)
     if annotate_support and row["contributing_folds"] < 10:
         ax.annotate(f"n={row['contributing_folds']}", (x, row["mean"]),
                     xytext=(0, 9), textcoords="offset points", ha="center", color=color, fontsize=8)
@@ -124,26 +130,46 @@ def decorate(fig, title, subtitle, footer, models):
         ax.set_axisbelow(True)
 
 
+def line_handle(*, color="#444444", linestyle="-", marker=None, filled=True, label=""):
+    """Legend handle with the same redundant visual encoding as the data."""
+    from matplotlib.lines import Line2D
+    return Line2D([], [], color=color, linestyle=linestyle, linewidth=1.8,
+                  marker=marker, markersize=6,
+                  markerfacecolor=color if filled else "white",
+                  markeredgecolor=color, markeredgewidth=1.2, label=label)
+
+
+def add_model_domain_legends(ax, models, *, model_location="upper left", domain_location="upper right"):
+    model_legend = ax.legend(
+        handles=[line_handle(color=MODEL_COLORS[model], label=MODEL_LABELS[model]) for model in models],
+        title="Model", frameon=False, fontsize=9, title_fontsize=9, loc=model_location)
+    ax.add_artist(model_legend)
+    ax.legend(handles=[line_handle(linestyle=style["linestyle"], marker=style["marker"],
+                                   filled=style["filled"], label=style["label"])
+                       for style in DOMAIN_STYLES.values()],
+              title="Training domain", frameon=False, fontsize=9,
+              title_fontsize=9, loc=domain_location)
+
+
 def learning_curves(plt, config, reports):
     sizes, models = config["participant_sizes"], list(reports)
-    fig, axes = plt.subplots(1, 2, figsize=(11.4, 5.6), sharey=True)
+    fig, ax = plt.subplots(figsize=(9.4, 5.8))
     rows = [score(reports, model, "main", domain, size)
             for model in models for domain in DOMAIN_STYLES for size in sizes]
-    for ax, domain in zip(axes, DOMAIN_STYLES):
-        for model in models:
+    for model in models:
+        for domain, style in DOMAIN_STYLES.items():
             series = [score(reports, model, "main", domain, size) for size in sizes]
             ax.plot(sizes, [r["mean"] for r in series], color=MODEL_COLORS[model],
-                    linewidth=1.8, label=MODEL_LABELS[model])
+                    linestyle=style["linestyle"], linewidth=1.8)
             for size, row in zip(sizes, series):
-                point(ax, size, row, MODEL_COLORS[model])
-        ax.set(title=DOMAIN_STYLES[domain]["label"], xlabel="Number of labelled training participants",
-               xticks=sizes, ylim=score_limits(rows))
-    axes[0].set_ylabel("Participant Macro-F1")
-    axes[1].legend(frameon=False, fontsize=9, loc="lower right")
-    decorate(fig, "Does adding labelled participants improve recognition?",
-             "Main analysis: naturally available training windows. Test data: unseen FL participants.",
+                point(ax, size, row, MODEL_COLORS[model], style["marker"], style["filled"])
+    ax.set(xlabel="Number of labelled training participants", ylabel="Participant Macro-F1",
+           xticks=sizes, ylim=score_limits(rows))
+    add_model_domain_legends(ax, models)
+    decorate(fig, "How do training participants and domain affect recognition?",
+             "Main analysis. Colour identifies the model; line style and marker identify the training domain. Test data: unseen FL participants.",
              INTERVAL_NOTE + "\nWindow counts and class composition can differ between FL and Lab.", models)
-    fig.subplots_adjust(left=.075, right=.98, bottom=.24, top=.82, wspace=.15)
+    fig.subplots_adjust(left=.095, right=.98, bottom=.25, top=.80)
     return fig
 
 
@@ -156,24 +182,33 @@ def domain_comparison(plt, config, reports):
     for ax, analysis, title in zip(axes[:2], ("main", "matched"), ("Natural availability", "Matched window counts")):
         for offset, (domain, style) in zip((-.12, .12), DOMAIN_STYLES.items()):
             for i, model in enumerate(models):
-                point(ax, i + offset, score(reports, model, analysis, domain, size), style["color"], style["marker"])
-            ax.plot([], [], style["marker"], color=style["color"], label=style["label"])
+                if domain == "Formal_Lab":
+                    fl = score(reports, model, analysis, "FL", size)
+                    lab = score(reports, model, analysis, "Formal_Lab", size)
+                    if fl["mean"] is not None and lab["mean"] is not None:
+                        ax.plot([i - .12, i + .12], [fl["mean"], lab["mean"]],
+                                color=MODEL_COLORS[model], linewidth=1, alpha=.45, zorder=1)
+                point(ax, i + offset, score(reports, model, analysis, domain, size),
+                      MODEL_COLORS[model], style["marker"], style["filled"])
         ax.set(title=title, xticks=range(len(models)), xticklabels=names,
                xlim=(-.5, len(models) - .5), ylim=score_limits(rows))
         ax.tick_params(axis="x", labelsize=9)
     axes[0].set_ylabel("Participant Macro-F1")
-    axes[0].legend(frameon=False, fontsize=9, loc="lower right")
+    axes[0].legend(handles=[line_handle(linestyle="none", marker=style["marker"], filled=style["filled"],
+                                        label=style["label"]) for style in DOMAIN_STYLES.values()],
+                   title="Training domain", frameon=False, fontsize=9,
+                   title_fontsize=9, loc="lower right")
     axes[2].axhline(0, color="#555555", linewidth=1)
-    for offset, analysis, color, marker, label in (
-            (-.12, "main", "#555555", "o", "Natural availability"),
-            (.12, "matched", "#009E73", "D", "Matched counts")):
+    for offset, (analysis, style) in zip((-.12, .12), ANALYSIS_STYLES.items()):
         for i, model in enumerate(models):
-            point(axes[2], i + offset, score(reports, model, analysis, "FL_minus_Formal_Lab", size), color, marker)
-        axes[2].plot([], [], marker, color=color, label=label)
+            point(axes[2], i + offset, score(reports, model, analysis, "FL_minus_Formal_Lab", size),
+                  MODEL_COLORS[model], style["marker"], style["filled"])
     axes[2].set(title="Paired FL minus Lab", ylabel="Difference in participant Macro-F1",
                 xticks=range(len(models)), xticklabels=names, xlim=(-.5, len(models) - .5))
     axes[2].tick_params(axis="x", labelsize=9)
-    axes[2].legend(frameon=False, fontsize=8, loc="best")
+    axes[2].legend(handles=[line_handle(linestyle="none", marker=style["marker"], filled=style["filled"],
+                                        label=style["label"]) for style in ANALYSIS_STYLES.values()],
+                   title="Analysis", frameon=False, fontsize=8, title_fontsize=9, loc="best")
     decorate(fig, f"Does the FL–Lab difference remain after matching?  |  {size} participants",
              "Test data: the same unseen FL participants. Positive paired differences favour FL training.",
              INTERVAL_NOTE + "\nMatching equalises training-window counts within each participant and class; it is not a causal test.", models)
@@ -191,14 +226,16 @@ def class_f1(plt, config, reports):
         for offset, (domain, style) in zip((-.12, .12), DOMAIN_STYLES.items()):
             for i, model in enumerate(models):
                 point(ax, i + offset, score(reports, model, "main", domain, size, c),
-                      style["color"], style["marker"], annotate_support=True)
-            ax.plot([], [], style["marker"], color=style["color"], label=style["label"])
+                      MODEL_COLORS[model], style["marker"], style["filled"], annotate_support=True)
         ax.set(title=CLASSES[c].replace("_", " "), xticks=range(len(models)), xticklabels=names,
                xlim=(-.5, len(models) - .5), ylim=score_limits(rows))
         ax.tick_params(axis="x", labelsize=9)
         if c % 2 == 0:
             ax.set_ylabel("Participant-averaged class F1")
-    axes[0, 1].legend(frameon=False, fontsize=9, loc="lower right")
+    axes[0, 1].legend(handles=[line_handle(linestyle="none", marker=style["marker"], filled=style["filled"],
+                                           label=style["label"]) for style in DOMAIN_STYLES.values()],
+                      title="Training domain", frameon=False, fontsize=9,
+                      title_fontsize=9, loc="lower right")
     decorate(fig, f"Which activities remain difficult?  |  {size} participants",
              "Main analysis. Scores for each activity, evaluated on unseen FL participants.",
              INTERVAL_NOTE + "\nAbsent true classes are omitted; NA = no support. n labels show fewer than 10 contributing folds (no interval)."
