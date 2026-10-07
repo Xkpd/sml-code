@@ -36,3 +36,4 @@ analysis/
 *.pt
 *.pth
 *.ckpt
+*.gz
