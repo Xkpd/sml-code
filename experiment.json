@@ -45,7 +45,7 @@
       "status": "ready",
       "module": "models.ft_transformer",
       "hyperparameter_name": "learning_rate",
-      "grid": [0.0001, 0.0003, 0.001],
+      "grid": [0.0001, 0.001, 0.003],
       "selection_rule": "exact_max_then_lower_value",
       "selection_tolerance": 0.0,
       "settings": {

@@ -15,7 +15,7 @@ from data import Condition, ExperimentData
 import run
 
 ROOT = Path(__file__).resolve().parent
-UPPER_LR = 0.003
+UPPER_LR = 0.01
 
 
 def upper_lr_plan(baseline_path, base, current_fingerprint):
@@ -35,6 +35,8 @@ def upper_lr_plan(baseline_path, base, current_fingerprint):
             != current_fingerprint['models']['ft_transformer']):
         raise ValueError('Baseline does not match the frozen shared protocol and FT model')
     upper = max(float(value) for value in spec['grid'])
+    if UPPER_LR <= upper:
+        raise ValueError('Diagnostic learning rate must be above the frozen grid')
     chosen = [selection for selection in baseline.get('selections', [])
               if float(selection['value']) == upper]
     if not chosen:
@@ -56,8 +58,8 @@ def upper_lr_plan(baseline_path, base, current_fingerprint):
 def calibrate(output=None, *, execute=False, smoke=False, upper_lr=False, baseline=None):
     if smoke and upper_lr:
         raise ValueError('Choose either smoke or upper-LR diagnostic, not both')
-    default = ('analysis/ft_upper_lr_diagnostic_v4' if upper_lr else
-               'analysis/ft_smoke_final_v4' if smoke else 'analysis/ft_calibration_final_v4')
+    default = ('analysis/ft_upper_lr_diagnostic_v5' if upper_lr else
+               'analysis/ft_smoke_final_v5' if smoke else 'analysis/ft_calibration_final_v5')
     output = Path(output or ROOT / default).resolve()
     base = run.read_config(ROOT)
     # Verify the final adapter/settings as well as the common frozen inputs.
@@ -76,7 +78,7 @@ def calibrate(output=None, *, execute=False, smoke=False, upper_lr=False, baseli
     baseline_path = baseline_upper = baseline_means = None
     if upper_lr:
         baseline_path, baseline_upper, conditions, baseline_means = upper_lr_plan(
-            baseline or ROOT / 'analysis/ft_calibration_final_v4/calibration.json',
+            baseline or ROOT / 'analysis/ft_calibration_final_v5/calibration.json',
             base, current_fingerprint)
         spec['grid'] = [UPPER_LR]
     print(f'{len(conditions)} conditions; {len(conditions)*3*len(spec["grid"])} inner fits; NO outer test/refit', flush=True)
@@ -133,9 +135,9 @@ if __name__ == '__main__':
     parser.add_argument('--execute', action='store_true')
     parser.add_argument('--smoke', action='store_true')
     parser.add_argument('--upper-lr-diagnostic', action='store_true',
-                        help='Run 0.003 only for conditions where frozen-grid 0.001 won')
+                        help='Run 0.01 only if the frozen upper endpoint wins a future inner-only calibration')
     parser.add_argument('--baseline', type=Path,
-                        help='Completed final calibration.json; default: analysis/ft_calibration_final_v4')
+                        help='Completed final calibration.json; default: analysis/ft_calibration_final_v5')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     calibrate(args.output, execute=args.execute, smoke=args.smoke,

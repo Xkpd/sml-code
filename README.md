@@ -78,7 +78,7 @@ This ordering prevents outer-test information from affecting training or selecti
 
 The compact numerical FT-Transformer is implemented and frozen for the shared runner.
 
-- Candidate learning rates: `0.0001, 0.0003, 0.001`; highest mean inner score wins, with exact ties preferring the smaller rate.
+- Candidate learning rates: `0.0001, 0.001, 0.003`; highest mean inner score wins, with exact ties preferring the smaller rate. This final grid was chosen before formal outer evaluation from an inner-only five-value calibration: `0.001` won four of eight conditions, neither expanded boundary won, and within the final three-value grid the middle value won five of eight conditions.
 - 64-dimensional tokens, 2 blocks, 4 heads, ReGLU, hidden width 128, dropout 0.1, batch size 512 and AdamW with weight decay 1e-5.
 - Training-fold standardisation and the shared training-only class weights.
 - Inner training: at most 100 epochs, patience 8, restoring the checkpoint with the best participant Macro-F1. Exact epoch ties retain the earliest checkpoint.

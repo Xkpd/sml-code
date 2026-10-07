@@ -1,6 +1,6 @@
 # FT submission implementation and running guide
 
-## Final settings (2026-10-06)
+## Final settings (2026-10-07)
 
 FT is now `ready` in `experiment.json` and included in `experiment.lock.json`.
 Only the FT model record is added to the lock: the shared protocol, participant
@@ -15,8 +15,9 @@ excluded from weight decay. This retains the pilot architecture; it is not a
 claim of reproducing every initialization detail of the published implementation.
 Reference: [Revisiting Deep Learning Models for Tabular Data](https://github.com/yandex-research/rtdl-revisiting-models).
 
-The learning-rate grid remains `[0.0001, 0.0003, 0.001]`. Inner training now has a
-100-epoch maximum and patience 8. Training uses CUDA BF16 autocast, with the loss
+The final learning-rate grid is `[0.0001, 0.001, 0.003]`. It was fixed before any
+formal outer-test evaluation using the inner-only calibration evidence described
+below. Inner training has a 100-epoch maximum and patience 8. Training uses CUDA BF16 autocast, with the loss
 and output probabilities calculated in float32. Explicit deterministic
 algorithms are required, TF32 is disabled and cuDNN benchmarking is disabled.
 Unsupported deterministic operations raise an error rather than silently
@@ -72,7 +73,7 @@ same-seed predictions, best-checkpoint restoration and save/load consistency.
 The ordinary test suite skips its CUDA test on a CPU machine; a skipped test is
 not GPU approval. The real-data smoke runs 9 one-epoch inner fits on outer0/n6
 Formal_Lab. All outer-test access is blocked. It writes only to
-`analysis/ft_smoke_final_v4`; smoke scores are not scientific results or grid
+`analysis/ft_smoke_final_v5`; smoke scores are not scientific results or grid
 selection evidence. Do not start the formal run if these checks fail.
 
 Run the suites as two separate commands as shown above. On the verification Mac,
@@ -128,8 +129,8 @@ results. This is a correctness smoke, not performance evidence or a CUDA test.
 
 ## Evidence for the chosen settings
 
-The unchanged `reports/ft_calibration_handoff/` folder preserves two historical
-stages, neither of which evaluated outer-test performance:
+The `reports/ft_calibration_handoff/` folder preserves the earlier calibration
+stages. Neither stage evaluated outer-test performance:
 
 - **50-epoch calibration:** 72 inner fits across 8 preselected conditions
   (folds 0/7, n=6/18, both domains, seed 17). Learning-rate winners were 2/5/1;
@@ -140,36 +141,19 @@ stages, neither of which evaluated outer-test performance:
   epoch was 54; no fit reached 100. Earlier-epoch trajectories also changed on
   GPU, so differences between these two runs cannot all be attributed to the cap.
 
-The submission settings retain the grid and raise the cap to 100 on this limited
-inner-only evidence. Deterministic controls are also new. A complete 72-fit
-recalibration under these final settings has **not** been performed; do not label
-historical scores as results from the final frozen implementation. No outer-test
-scores were used to choose these changes. Further optional calibration is
-available through `python calibrate_ft.py --execute`, isolated in
-`analysis/ft_calibration_final_v4`, and never replaces the historical reports.
-Do not adjust the grid or stopping policy after inspecting formal outer scores.
+The subsequent final-setting calibration used eight preselected conditions,
+three inner folds and five learning rates
+`[0.00003, 0.0001, 0.0003, 0.001, 0.003]`. It contains 120 unique inner-fit
+records, reports `outer_test_loaded=false`, and has no winner at either expanded
+boundary. Condition winners were: `0.0001` in 3/8, `0.0003` in 1/8 and `0.001`
+in 4/8. Neither `0.00003` nor `0.003` won a condition.
 
-### Upper learning-rate check after the final calibration
+The formal three-value grid `[0.0001, 0.001, 0.003]` keeps the two repeatedly
+useful rates and the checked upper boundary. Re-evaluating the recorded inner
+scores within this final grid gives five wins for the middle value `0.001` and
+three for `0.0001`. This decision was made before formal outer evaluation. The
+five-value calibration is tuning-design evidence, not a formal model result.
 
-If the completed final calibration selects its upper endpoint (`0.001`), test
-`0.003` only on those winning conditions before any formal outer evaluation:
-
-```bash
-python calibrate_ft.py --upper-lr-diagnostic
-python calibrate_ft.py --execute --upper-lr-diagnostic
-```
-
-The first command must print the planned number of conditions/fits and performs
-no training. For the current final calibration it prints 4 conditions and 12
-inner fits. The second command writes to
-`analysis/ft_upper_lr_diagnostic_v4`; it neither edits `experiment.json` nor the
-lock and cannot access outer-test data. It reads the baseline from
-`analysis/ft_calibration_final_v4/calibration.json`. If that file is elsewhere,
-pass `--baseline /path/to/calibration.json`.
-
-The output `calibration.json` contains `diagnostic.comparisons`, including the
-mean participant Macro-F1 for `0.001`, the new mean for `0.003`, and their
-difference for every checked condition. Keep `0.003` only if it improves
-repeatedly by a meaningful amount. Decide and freeze the formal grid before
-starting `python run.py run --model ft`; diagnostic results are not formal model
-outputs and must not be placed under `outputs/ft_transformer`.
+Do not adjust the grid, architecture or stopping policy after inspecting formal
+outer scores. `python calibrate_ft.py --execute --smoke` is only an integration
+check and cannot be used to revise the frozen grid.

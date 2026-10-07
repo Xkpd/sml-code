@@ -152,8 +152,8 @@
         "hyperparameter_name": "learning_rate",
         "grid": [
           0.0001,
-          0.0003,
-          0.001
+          0.001,
+          0.003
         ],
         "selection_rule": "exact_max_then_lower_value",
         "selection_tolerance": 0.0,
@@ -176,7 +176,7 @@
         "matched_epoch_policy": "reuse_seed17_refit_epochs"
       },
       "source_sha256": "35e581aaef3ffa58d5d16fa9e2ca1513044f5aff2178ebc7ed8a4e88351b26e1",
-      "sha256": "128f0c059932a71dfc629722f3aa2e8fc24c40a02d2fcfdbdd72808a480b0fbd"
+      "sha256": "7aac969bc0896a52599e20b10f7ae91c6b4ca56d26871a62bb9ddc8934aee16c"
     }
   }
 }
